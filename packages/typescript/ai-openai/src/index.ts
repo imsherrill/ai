@@ -94,3 +94,22 @@ export type {
   OpenAIDocumentMetadata,
   OpenAIMessageMetadataByModality,
 } from './message-types'
+
+// ============================================================================
+// Realtime (Voice) Adapters
+// ============================================================================
+
+export {
+  openaiRealtimeToken,
+  openaiRealtime,
+} from './realtime/index'
+
+export type {
+  OpenAIRealtimeVoice,
+  OpenAIRealtimeModel,
+  OpenAIRealtimeTokenOptions,
+  OpenAIRealtimeOptions,
+  OpenAITurnDetection,
+  OpenAISemanticVADConfig,
+  OpenAIServerVADConfig,
+} from './realtime/index'
