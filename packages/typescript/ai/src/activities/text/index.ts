@@ -20,6 +20,7 @@ import type {
   SchemaInput,
   StreamChunk,
   TextOptions,
+  Tool,
 } from '../../types'
 
 // ===========================
@@ -28,7 +29,7 @@ import type {
 
 /**
  * Options for the text function.
- * A simplified version of chat options without tools or agent loop strategy.
+ * A simplified version of chat options without agent loop strategy.
  *
  * @template TAdapter - The text adapter type (created by a provider function)
  * @template TSchema - Optional Standard Schema for structured output
@@ -50,6 +51,8 @@ export interface TextOptions_<
   >
   /** System prompts to prepend to the conversation */
   systemPrompts?: TextOptions['systemPrompts']
+  /** Tools for function calling (pass-through to adapter, NOT executed by text) */
+  tools?: ReadonlyArray<Tool>
   /** Controls the randomness of the output. Higher values make output more random. Range: [0.0, 2.0] */
   temperature?: TextOptions['temperature']
   /** Nucleus sampling parameter. The model considers tokens with topP probability mass. */
@@ -90,6 +93,12 @@ export interface TextOptions_<
    * @default true
    */
   stream?: TStream
+  /**
+   * Internal flag: when true, skip emitting all devtools events.
+   * Used by agentLoop() to prevent duplicate event emission.
+   * @internal
+   */
+  _skipEvents?: boolean
 }
 
 // ===========================
@@ -254,6 +263,7 @@ async function* runStreamingText<TAdapter extends AnyTextAdapter>(
     adapter,
     messages = [],
     systemPrompts,
+    tools,
     temperature,
     topP,
     maxTokens,
@@ -261,6 +271,7 @@ async function* runStreamingText<TAdapter extends AnyTextAdapter>(
     modelOptions,
     abortController,
     conversationId,
+    _skipEvents,
   } = options
 
   const model = adapter.model
@@ -279,40 +290,48 @@ async function* runStreamingText<TAdapter extends AnyTextAdapter>(
     ? { signal: abortController.signal }
     : undefined
 
-  // Emit start events
-  const startOptions: Record<string, unknown> = {}
-  if (temperature !== undefined) startOptions.temperature = temperature
-  if (topP !== undefined) startOptions.topP = topP
-  if (maxTokens !== undefined) startOptions.maxTokens = maxTokens
-  if (metadata !== undefined) startOptions.metadata = metadata
+  // Convert tool schemas to JSON Schema before passing to adapter
+  const toolsWithJsonSchemas = tools?.map((tool) => ({
+    ...tool,
+    inputSchema: tool.inputSchema
+      ? convertSchemaToJsonSchema(tool.inputSchema)
+      : undefined,
+    outputSchema: tool.outputSchema
+      ? convertSchemaToJsonSchema(tool.outputSchema)
+      : undefined,
+  }))
 
-  aiEventClient.emit('text:started', {
-    requestId,
-    streamId,
-    model,
-    provider: adapter.name,
-    messageCount: messages.length,
-    hasTools: false,
-    streaming: true,
-    timestamp: Date.now(),
-    clientId: conversationId,
-    toolNames: undefined,
-    options: Object.keys(startOptions).length > 0 ? startOptions : undefined,
-    modelOptions: modelOptions as Record<string, unknown> | undefined,
-  })
+  // Emit start events (unless suppressed by agentLoop)
+  if (!_skipEvents) {
+    const startOptions: Record<string, unknown> = {}
+    if (temperature !== undefined) startOptions.temperature = temperature
+    if (topP !== undefined) startOptions.topP = topP
+    if (maxTokens !== undefined) startOptions.maxTokens = maxTokens
+    if (metadata !== undefined) startOptions.metadata = metadata
 
-  aiEventClient.emit('stream:started', {
-    streamId,
-    model,
-    provider: adapter.name,
-    timestamp: Date.now(),
-  })
+    const toolNames = tools?.map((t) => t.name)
+
+    aiEventClient.emit('text:request:started', {
+      requestId,
+      streamId,
+      model,
+      provider: adapter.name,
+      messageCount: messages.length,
+      hasTools: (tools?.length ?? 0) > 0,
+      streaming: true,
+      timestamp: Date.now(),
+      clientId: conversationId,
+      toolNames: toolNames?.length ? toolNames : undefined,
+      options: Object.keys(startOptions).length > 0 ? startOptions : undefined,
+      modelOptions: modelOptions as Record<string, unknown> | undefined,
+    })
+  }
 
   try {
     for await (const chunk of adapter.chatStream({
       model,
       messages,
-      tools: undefined,
+      tools: toolsWithJsonSchemas,
       temperature,
       topP,
       maxTokens,
@@ -328,79 +347,95 @@ async function* runStreamingText<TAdapter extends AnyTextAdapter>(
       totalChunkCount++
       yield chunk
 
-      // Track content and emit events
+      // Track content (always needed for accumulated content)
+      // but only emit devtools events when not suppressed
       switch (chunk.type) {
-        case 'content':
-          accumulatedContent = chunk.content
-          aiEventClient.emit('stream:chunk:content', {
-            streamId,
-            messageId,
-            content: chunk.content,
-            delta: chunk.delta,
-            timestamp: Date.now(),
-          })
-          break
-        case 'done':
-          lastFinishReason = chunk.finishReason
-          lastUsage = chunk.usage
-          aiEventClient.emit('stream:chunk:done', {
-            streamId,
-            messageId,
-            finishReason: chunk.finishReason,
-            usage: chunk.usage,
-            timestamp: Date.now(),
-          })
-          if (chunk.usage) {
-            aiEventClient.emit('usage:tokens', {
+        case 'TEXT_MESSAGE_CONTENT':
+          if (chunk.content) {
+            accumulatedContent = chunk.content
+          } else {
+            accumulatedContent += chunk.delta
+          }
+          if (!_skipEvents) {
+            aiEventClient.emit('text:chunk:content', {
               requestId,
               streamId,
               messageId,
-              model,
-              usage: chunk.usage,
+              content: accumulatedContent,
+              delta: chunk.delta,
               timestamp: Date.now(),
             })
           }
           break
-        case 'error':
-          aiEventClient.emit('stream:chunk:error', {
-            streamId,
-            messageId,
-            error: chunk.error.message,
-            timestamp: Date.now(),
-          })
+        case 'RUN_FINISHED':
+          lastFinishReason = chunk.finishReason
+          lastUsage = chunk.usage
+          if (!_skipEvents) {
+            aiEventClient.emit('text:chunk:done', {
+              requestId,
+              streamId,
+              messageId,
+              finishReason: chunk.finishReason,
+              usage: chunk.usage,
+              timestamp: Date.now(),
+            })
+            if (chunk.usage) {
+              aiEventClient.emit('text:usage', {
+                requestId,
+                streamId,
+                messageId,
+                model,
+                usage: chunk.usage,
+                timestamp: Date.now(),
+              })
+            }
+          }
           break
-        case 'thinking':
-          aiEventClient.emit('stream:chunk:thinking', {
-            streamId,
-            messageId,
-            content: chunk.content,
-            delta: chunk.delta,
-            timestamp: Date.now(),
-          })
+        case 'RUN_ERROR':
+          if (!_skipEvents) {
+            aiEventClient.emit('text:chunk:error', {
+              requestId,
+              streamId,
+              messageId,
+              error: chunk.error.message,
+              timestamp: Date.now(),
+            })
+          }
+          break
+        case 'STEP_FINISHED':
+          if (!_skipEvents && (chunk.content || chunk.delta)) {
+            aiEventClient.emit('text:chunk:thinking', {
+              requestId,
+              streamId,
+              messageId,
+              content: chunk.content || '',
+              delta: chunk.delta,
+              timestamp: Date.now(),
+            })
+          }
           break
       }
     }
   } finally {
-    const now = Date.now()
+    if (!_skipEvents) {
+      const now = Date.now()
 
-    aiEventClient.emit('text:completed', {
-      requestId,
-      streamId,
-      model,
-      content: accumulatedContent,
-      messageId,
-      finishReason: lastFinishReason ?? undefined,
-      usage: lastUsage,
-      timestamp: now,
-    })
-
-    aiEventClient.emit('stream:ended', {
-      requestId,
-      streamId,
-      totalChunks: totalChunkCount,
-      duration: now - streamStartTime,
-      timestamp: now,
-    })
+      aiEventClient.emit('text:request:completed', {
+        requestId,
+        streamId,
+        model,
+        provider: adapter.name,
+        content: accumulatedContent,
+        messageId,
+        finishReason: lastFinishReason ?? undefined,
+        usage: lastUsage,
+        duration: now - streamStartTime,
+        messageCount: messages.length,
+        hasTools: (tools?.length ?? 0) > 0,
+        streaming: true,
+        timestamp: now,
+      })
+    }
   }
 }
 

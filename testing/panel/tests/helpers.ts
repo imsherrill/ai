@@ -268,6 +268,36 @@ export interface SummarizeOptions {
 }
 
 /**
+ * Retry helper for rate-limited API calls.
+ * Retries on 429/500 with exponential backoff.
+ */
+async function withRetry<T>(
+  fn: () => Promise<T>,
+  maxRetries: number = 3,
+  baseDelayMs: number = 2000,
+): Promise<T> {
+  let lastError: Error | undefined
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn()
+    } catch (error: any) {
+      lastError = error
+      const isRetryable =
+        error.message?.includes('429') ||
+        error.message?.includes('RESOURCE_EXHAUSTED') ||
+        error.message?.includes('rate') ||
+        error.message?.includes('Rate')
+      if (!isRetryable || attempt === maxRetries) {
+        throw error
+      }
+      const delay = baseDelayMs * Math.pow(2, attempt)
+      await new Promise((resolve) => setTimeout(resolve, delay))
+    }
+  }
+  throw lastError
+}
+
+/**
  * Call the summarize API directly (non-streaming)
  */
 export async function callSummarizeAPI(
@@ -275,23 +305,27 @@ export async function callSummarizeAPI(
   baseURL: string,
   options: SummarizeOptions,
 ): Promise<{ summary: string; provider: string; model: string }> {
-  const response = await request.post(`${baseURL}/api/summarize`, {
-    data: {
-      text: options.text,
-      provider: options.provider,
-      model: options.model,
-      maxLength: options.maxLength || 100,
-      style: options.style || 'concise',
-      stream: false,
-    },
+  return withRetry(async () => {
+    const response = await request.post(`${baseURL}/api/summarize`, {
+      data: {
+        text: options.text,
+        provider: options.provider,
+        model: options.model,
+        maxLength: options.maxLength || 100,
+        style: options.style || 'concise',
+        stream: false,
+      },
+    })
+
+    if (!response.ok()) {
+      const errorBody = await response.text()
+      throw new Error(
+        `Summarize API failed: ${response.status()} - ${errorBody}`,
+      )
+    }
+
+    return response.json()
   })
-
-  if (!response.ok()) {
-    const errorBody = await response.text()
-    throw new Error(`Summarize API failed: ${response.status()} - ${errorBody}`)
-  }
-
-  return response.json()
 }
 
 /**
@@ -307,60 +341,62 @@ export async function callSummarizeAPIStreaming(
   model: string
   chunkCount: number
 }> {
-  const response = await request.post(`${baseURL}/api/summarize`, {
-    data: {
-      text: options.text,
-      provider: options.provider,
-      model: options.model,
-      maxLength: options.maxLength || 100,
-      style: options.style || 'concise',
-      stream: true,
-    },
-  })
+  return withRetry(async () => {
+    const response = await request.post(`${baseURL}/api/summarize`, {
+      data: {
+        text: options.text,
+        provider: options.provider,
+        model: options.model,
+        maxLength: options.maxLength || 100,
+        style: options.style || 'concise',
+        stream: true,
+      },
+    })
 
-  if (!response.ok()) {
-    const errorBody = await response.text()
-    throw new Error(
-      `Summarize API streaming failed: ${response.status()} - ${errorBody}`,
-    )
-  }
+    if (!response.ok()) {
+      const errorBody = await response.text()
+      throw new Error(
+        `Summarize API streaming failed: ${response.status()} - ${errorBody}`,
+      )
+    }
 
-  // Parse SSE response
-  const text = await response.text()
-  const lines = text.split('\n')
+    // Parse SSE response
+    const text = await response.text()
+    const lines = text.split('\n')
 
-  let summary = ''
-  let provider = ''
-  let model = ''
-  let chunkCount = 0
+    let summary = ''
+    let provider = ''
+    let model = ''
+    let chunkCount = 0
 
-  for (const line of lines) {
-    if (line.startsWith('data: ')) {
-      const data = line.slice(6)
-      if (data === '[DONE]') continue
+    for (const line of lines) {
+      if (line.startsWith('data: ')) {
+        const data = line.slice(6)
+        if (data === '[DONE]') continue
 
-      try {
-        const parsed = JSON.parse(data)
-        if (parsed.type === 'error') {
-          throw new Error(parsed.error)
-        }
-        if (parsed.type === 'TEXT_MESSAGE_CONTENT') {
-          chunkCount++
-          if (parsed.delta) {
-            summary += parsed.delta
-          } else if (parsed.content) {
-            summary = parsed.content
+        try {
+          const parsed = JSON.parse(data)
+          if (parsed.type === 'error') {
+            throw new Error(parsed.error)
           }
-          provider = parsed.provider || provider
-          model = parsed.model || model
+          if (parsed.type === 'TEXT_MESSAGE_CONTENT') {
+            chunkCount++
+            if (parsed.delta) {
+              summary += parsed.delta
+            } else if (parsed.content) {
+              summary = parsed.content
+            }
+            provider = parsed.provider || provider
+            model = parsed.model || model
+          }
+        } catch {
+          // Ignore parse errors
         }
-      } catch {
-        // Ignore parse errors
       }
     }
-  }
 
-  return { summary, provider, model, chunkCount }
+    return { summary, provider, model, chunkCount }
+  })
 }
 
 /**

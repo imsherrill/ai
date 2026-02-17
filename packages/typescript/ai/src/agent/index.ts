@@ -1,8 +1,10 @@
 /**
  * Agent Loop (Experimental)
  *
- * Orchestrates agentic text generation by wrapping a text creator function
+ * Orchestrates agentic text generation by wrapping the text() function
  * and handling automatic tool execution and looping.
+ *
+ * Dependency graph: text ← agentLoop ← chat (no cycles)
  */
 
 import { aiEventClient } from '../event-client.js'
@@ -11,7 +13,8 @@ import {
   executeToolCalls,
 } from '../activities/chat/tools/tool-calls'
 import { maxIterations as maxIterationsStrategy } from '../activities/chat/agent-loop-strategies'
-import { chat } from '../activities/chat/index'
+import { text } from '../activities/text/index'
+import { convertMessagesToModelMessages } from '../activities/chat/messages'
 import type {
   ApprovalRequest,
   ClientToolRequest,
@@ -22,11 +25,15 @@ import type { z } from 'zod'
 import type {
   AgentLoopStrategy,
   ConstrainedModelMessage,
-  DoneStreamChunk,
   ModelMessage,
+  RunFinishedEvent,
   StreamChunk,
+  TextMessageContentEvent,
   Tool,
   ToolCall,
+  ToolCallArgsEvent,
+  ToolCallEndEvent,
+  ToolCallStartEvent,
 } from '../types'
 
 // ===========================
@@ -187,6 +194,8 @@ export interface AgentLoopDirectStructuredOptions<
 interface AgentLoopEngineConfig {
   textFn: TextCreator
   options: AgentLoopBaseOptions
+  /** Adapter for event context (when using direct options API) */
+  adapter?: AnyTextAdapter
 }
 
 type ToolPhaseResult = 'continue' | 'stop' | 'wait'
@@ -203,6 +212,17 @@ class AgentLoopEngine {
   private readonly streamId: string
   private readonly effectiveSignal?: AbortSignal
 
+  // Adapter context for events
+  private readonly adapterModel: string
+  private readonly adapterProvider: string
+  private readonly eventOptions?: Record<string, unknown>
+  private readonly eventModelOptions?: Record<string, unknown>
+  private readonly systemPrompts: Array<string>
+
+  // Client state extracted from initial messages (before conversion)
+  private readonly initialApprovals: Map<string, boolean>
+  private readonly initialClientToolResults: Map<string, any>
+
   private messages: Array<ModelMessage>
   private iterationCount = 0
   private lastFinishReason: string | null = null
@@ -210,7 +230,7 @@ class AgentLoopEngine {
   private totalChunkCount = 0
   private currentMessageId: string | null = null
   private accumulatedContent = ''
-  private doneChunk: DoneStreamChunk | null = null
+  private finishedEvent: RunFinishedEvent | null = null
   private shouldEmitStreamEnd = true
   private earlyTermination = false
   private toolPhase: ToolPhaseResult = 'continue'
@@ -224,10 +244,27 @@ class AgentLoopEngine {
       config.options.agentLoopStrategy || maxIterationsStrategy(5)
     this.toolCallManager = new ToolCallManager(this.tools)
     this.initialMessageCount = config.options.messages.length
-    this.messages = [...config.options.messages]
     this.requestId = this.createId('agent')
     this.streamId = this.createId('stream')
     this.effectiveSignal = config.options.abortController?.signal
+
+    // Set adapter context for events
+    this.adapterModel = config.adapter?.model ?? 'agent-loop'
+    this.adapterProvider = config.adapter?.name ?? 'agent'
+    this.systemPrompts = config.options.systemPrompts || []
+
+    // Extract client state from original messages BEFORE conversion
+    const { approvals, clientToolResults } =
+      this.extractClientStateFromOriginalMessages(
+        config.options.messages as Array<any>,
+      )
+    this.initialApprovals = approvals
+    this.initialClientToolResults = clientToolResults
+
+    // Convert messages to ModelMessage format (handles both UIMessage and ModelMessage input)
+    this.messages = convertMessagesToModelMessages(
+      config.options.messages as Array<any>,
+    )
   }
 
   /** Get the accumulated content after the loop completes */
@@ -272,24 +309,43 @@ class AgentLoopEngine {
   private beforeRun(): void {
     this.streamStartTime = Date.now()
 
-    aiEventClient.emit('text:started', {
-      requestId: this.requestId,
-      streamId: this.streamId,
-      model: 'agent-loop',
-      provider: 'agent',
-      messageCount: this.initialMessageCount,
-      hasTools: this.tools.length > 0,
-      streaming: true,
+    aiEventClient.emit('text:request:started', {
+      ...this.buildEventContext(),
       timestamp: Date.now(),
-      clientId: this.options.conversationId,
-      toolNames: this.tools.map((t) => t.name),
     })
 
-    aiEventClient.emit('stream:started', {
-      streamId: this.streamId,
-      model: 'agent-loop',
-      provider: 'agent',
-      timestamp: Date.now(),
+    // Emit messages for tracking
+    const messagesToEmit = this.options.conversationId
+      ? this.messages.slice(-1).filter((m) => m.role === 'user')
+      : this.messages
+
+    messagesToEmit.forEach((message, index) => {
+      const messageIndex = this.options.conversationId
+        ? this.messages.length - 1
+        : index
+      const messageId = this.createId('msg')
+      const content = this.getContentString(message.content)
+
+      aiEventClient.emit('text:message:created', {
+        ...this.buildEventContext(),
+        messageId,
+        role: message.role,
+        content,
+        toolCalls: message.toolCalls,
+        messageIndex,
+        timestamp: Date.now(),
+      })
+
+      if (message.role === 'user') {
+        aiEventClient.emit('text:message:user', {
+          ...this.buildEventContext(),
+          messageId,
+          role: 'user',
+          content,
+          messageIndex,
+          timestamp: Date.now(),
+        })
+      }
     })
   }
 
@@ -300,21 +356,12 @@ class AgentLoopEngine {
 
     const now = Date.now()
 
-    aiEventClient.emit('text:completed', {
-      requestId: this.requestId,
-      streamId: this.streamId,
-      model: 'agent-loop',
+    aiEventClient.emit('text:request:completed', {
+      ...this.buildEventContext(),
       content: this.accumulatedContent,
       messageId: this.currentMessageId || undefined,
       finishReason: this.lastFinishReason || undefined,
-      usage: this.doneChunk?.usage,
-      timestamp: now,
-    })
-
-    aiEventClient.emit('stream:ended', {
-      requestId: this.requestId,
-      streamId: this.streamId,
-      totalChunks: this.totalChunkCount,
+      usage: this.finishedEvent?.usage,
       duration: now - this.streamStartTime,
       timestamp: now,
     })
@@ -339,7 +386,15 @@ class AgentLoopEngine {
   private beginIteration(): void {
     this.currentMessageId = this.createId('msg')
     this.accumulatedContent = ''
-    this.doneChunk = null
+    this.finishedEvent = null
+
+    aiEventClient.emit('text:message:created', {
+      ...this.buildEventContext(),
+      messageId: this.currentMessageId,
+      role: 'assistant',
+      content: '',
+      timestamp: Date.now(),
+    })
   }
 
   private async *streamTextResponse(): AsyncGenerator<StreamChunk> {
@@ -369,99 +424,87 @@ class AgentLoopEngine {
 
   private handleStreamChunk(chunk: StreamChunk): void {
     switch (chunk.type) {
-      case 'content':
-        this.handleContentChunk(chunk)
+      case 'TEXT_MESSAGE_CONTENT':
+        this.handleTextMessageContentEvent(chunk)
         break
-      case 'tool_call':
-        this.handleToolCallChunk(chunk)
+      case 'TOOL_CALL_START':
+        this.handleToolCallStartEvent(chunk)
         break
-      case 'tool_result':
-        this.handleToolResultChunk(chunk)
+      case 'TOOL_CALL_ARGS':
+        this.handleToolCallArgsEvent(chunk)
         break
-      case 'done':
-        this.handleDoneChunk(chunk)
+      case 'TOOL_CALL_END':
+        this.handleToolCallEndEvent(chunk)
         break
-      case 'error':
-        this.handleErrorChunk(chunk)
+      case 'RUN_FINISHED':
+        this.handleRunFinishedEvent(chunk)
         break
-      case 'thinking':
-        this.handleThinkingChunk(chunk)
+      case 'RUN_ERROR':
+        this.handleRunErrorEvent(chunk)
+        break
+      case 'STEP_FINISHED':
+        this.handleStepFinishedEvent(chunk)
         break
       default:
         break
     }
   }
 
-  private handleContentChunk(chunk: Extract<StreamChunk, { type: 'content' }>) {
-    this.accumulatedContent = chunk.content
-    aiEventClient.emit('stream:chunk:content', {
-      streamId: this.streamId,
+  private handleTextMessageContentEvent(chunk: TextMessageContentEvent): void {
+    if (chunk.content) {
+      this.accumulatedContent = chunk.content
+    } else {
+      this.accumulatedContent += chunk.delta
+    }
+    aiEventClient.emit('text:chunk:content', {
+      ...this.buildEventContext(),
       messageId: this.currentMessageId || undefined,
-      content: chunk.content,
+      content: this.accumulatedContent,
       delta: chunk.delta,
       timestamp: Date.now(),
     })
   }
 
-  private handleToolCallChunk(
-    chunk: Extract<StreamChunk, { type: 'tool_call' }>,
-  ): void {
-    this.toolCallManager.addToolCallChunk(chunk)
-    aiEventClient.emit('stream:chunk:tool-call', {
-      streamId: this.streamId,
-      messageId: this.currentMessageId || undefined,
-      toolCallId: chunk.toolCall.id,
-      toolName: chunk.toolCall.function.name,
-      index: chunk.index,
-      arguments: chunk.toolCall.function.arguments,
-      timestamp: Date.now(),
-    })
-  }
-
-  private handleToolResultChunk(
-    chunk: Extract<StreamChunk, { type: 'tool_result' }>,
-  ): void {
-    aiEventClient.emit('stream:chunk:tool-result', {
-      streamId: this.streamId,
+  private handleToolCallStartEvent(chunk: ToolCallStartEvent): void {
+    this.toolCallManager.addToolCallStartEvent(chunk)
+    aiEventClient.emit('text:chunk:tool-call', {
+      ...this.buildEventContext(),
       messageId: this.currentMessageId || undefined,
       toolCallId: chunk.toolCallId,
-      result: chunk.content,
+      toolName: chunk.toolName,
+      index: chunk.index ?? 0,
+      arguments: '',
       timestamp: Date.now(),
     })
   }
 
-  private handleDoneChunk(chunk: DoneStreamChunk): void {
-    // Don't overwrite a tool_calls finishReason with a stop finishReason
-    if (
-      this.doneChunk?.finishReason === 'tool_calls' &&
-      chunk.finishReason === 'stop'
-    ) {
-      this.lastFinishReason = chunk.finishReason
-      aiEventClient.emit('stream:chunk:done', {
-        streamId: this.streamId,
-        messageId: this.currentMessageId || undefined,
-        finishReason: chunk.finishReason,
-        usage: chunk.usage,
-        timestamp: Date.now(),
-      })
+  private handleToolCallArgsEvent(chunk: ToolCallArgsEvent): void {
+    this.toolCallManager.addToolCallArgsEvent(chunk)
+    aiEventClient.emit('text:chunk:tool-call', {
+      ...this.buildEventContext(),
+      messageId: this.currentMessageId || undefined,
+      toolCallId: chunk.toolCallId,
+      toolName: '',
+      index: 0,
+      arguments: chunk.delta,
+      timestamp: Date.now(),
+    })
+  }
 
-      if (chunk.usage) {
-        aiEventClient.emit('usage:tokens', {
-          requestId: this.requestId,
-          streamId: this.streamId,
-          messageId: this.currentMessageId || undefined,
-          model: 'agent-loop',
-          usage: chunk.usage,
-          timestamp: Date.now(),
-        })
-      }
-      return
-    }
+  private handleToolCallEndEvent(chunk: ToolCallEndEvent): void {
+    this.toolCallManager.completeToolCall(chunk)
+    aiEventClient.emit('text:chunk:tool-result', {
+      ...this.buildEventContext(),
+      messageId: this.currentMessageId || undefined,
+      toolCallId: chunk.toolCallId,
+      result: chunk.result || '',
+      timestamp: Date.now(),
+    })
+  }
 
-    this.doneChunk = chunk
-    this.lastFinishReason = chunk.finishReason
-    aiEventClient.emit('stream:chunk:done', {
-      streamId: this.streamId,
+  private handleRunFinishedEvent(chunk: RunFinishedEvent): void {
+    aiEventClient.emit('text:chunk:done', {
+      ...this.buildEventContext(),
       messageId: this.currentMessageId || undefined,
       finishReason: chunk.finishReason,
       usage: chunk.usage,
@@ -469,22 +512,23 @@ class AgentLoopEngine {
     })
 
     if (chunk.usage) {
-      aiEventClient.emit('usage:tokens', {
-        requestId: this.requestId,
-        streamId: this.streamId,
+      aiEventClient.emit('text:usage', {
+        ...this.buildEventContext(),
         messageId: this.currentMessageId || undefined,
-        model: 'agent-loop',
         usage: chunk.usage,
         timestamp: Date.now(),
       })
     }
+
+    this.finishedEvent = chunk
+    this.lastFinishReason = chunk.finishReason
   }
 
-  private handleErrorChunk(
-    chunk: Extract<StreamChunk, { type: 'error' }>,
+  private handleRunErrorEvent(
+    chunk: Extract<StreamChunk, { type: 'RUN_ERROR' }>,
   ): void {
-    aiEventClient.emit('stream:chunk:error', {
-      streamId: this.streamId,
+    aiEventClient.emit('text:chunk:error', {
+      ...this.buildEventContext(),
       messageId: this.currentMessageId || undefined,
       error: chunk.error.message,
       timestamp: Date.now(),
@@ -493,16 +537,18 @@ class AgentLoopEngine {
     this.shouldEmitStreamEnd = false
   }
 
-  private handleThinkingChunk(
-    chunk: Extract<StreamChunk, { type: 'thinking' }>,
+  private handleStepFinishedEvent(
+    chunk: Extract<StreamChunk, { type: 'STEP_FINISHED' }>,
   ): void {
-    aiEventClient.emit('stream:chunk:thinking', {
-      streamId: this.streamId,
-      messageId: this.currentMessageId || undefined,
-      content: chunk.content,
-      delta: chunk.delta,
-      timestamp: Date.now(),
-    })
+    if (chunk.content || chunk.delta) {
+      aiEventClient.emit('text:chunk:thinking', {
+        ...this.buildEventContext(),
+        messageId: this.currentMessageId || undefined,
+        content: chunk.content || '',
+        delta: chunk.delta,
+        timestamp: Date.now(),
+      })
+    }
   }
 
   private async *checkForPendingToolCalls(): AsyncGenerator<
@@ -515,16 +561,7 @@ class AgentLoopEngine {
       return 'continue'
     }
 
-    const doneChunk = this.createSyntheticDoneChunk()
-
-    aiEventClient.emit('text:iteration', {
-      requestId: this.requestId,
-      streamId: this.streamId,
-      iterationNumber: this.iterationCount + 1,
-      messageCount: this.messages.length,
-      toolCallCount: pendingToolCalls.length,
-      timestamp: Date.now(),
-    })
+    const finishEvent = this.createSyntheticFinishedEvent()
 
     const { approvals, clientToolResults } = this.collectClientState()
 
@@ -541,14 +578,14 @@ class AgentLoopEngine {
     ) {
       for (const chunk of this.emitApprovalRequests(
         executionResult.needsApproval,
-        doneChunk,
+        finishEvent,
       )) {
         yield chunk
       }
 
       for (const chunk of this.emitClientToolInputs(
         executionResult.needsClientExecution,
-        doneChunk,
+        finishEvent,
       )) {
         yield chunk
       }
@@ -559,7 +596,7 @@ class AgentLoopEngine {
 
     const toolResultChunks = this.emitToolResults(
       executionResult.results,
-      doneChunk,
+      finishEvent,
     )
 
     for (const chunk of toolResultChunks) {
@@ -576,21 +613,12 @@ class AgentLoopEngine {
     }
 
     const toolCalls = this.toolCallManager.getToolCalls()
-    const doneChunk = this.doneChunk
+    const finishEvent = this.finishedEvent
 
-    if (!doneChunk || toolCalls.length === 0) {
+    if (!finishEvent || toolCalls.length === 0) {
       this.setToolPhase('stop')
       return
     }
-
-    aiEventClient.emit('text:iteration', {
-      requestId: this.requestId,
-      streamId: this.streamId,
-      iterationNumber: this.iterationCount + 1,
-      messageCount: this.messages.length,
-      toolCallCount: toolCalls.length,
-      timestamp: Date.now(),
-    })
 
     this.addAssistantToolCallMessage(toolCalls)
 
@@ -609,14 +637,14 @@ class AgentLoopEngine {
     ) {
       for (const chunk of this.emitApprovalRequests(
         executionResult.needsApproval,
-        doneChunk,
+        finishEvent,
       )) {
         yield chunk
       }
 
       for (const chunk of this.emitClientToolInputs(
         executionResult.needsClientExecution,
-        doneChunk,
+        finishEvent,
       )) {
         yield chunk
       }
@@ -627,7 +655,7 @@ class AgentLoopEngine {
 
     const toolResultChunks = this.emitToolResults(
       executionResult.results,
-      doneChunk,
+      finishEvent,
     )
 
     for (const chunk of toolResultChunks) {
@@ -641,13 +669,14 @@ class AgentLoopEngine {
 
   private shouldExecuteToolPhase(): boolean {
     return (
-      this.doneChunk?.finishReason === 'tool_calls' &&
+      this.finishedEvent?.finishReason === 'tool_calls' &&
       this.tools.length > 0 &&
       this.toolCallManager.hasToolCalls()
     )
   }
 
   private addAssistantToolCallMessage(toolCalls: Array<ToolCall>): void {
+    const messageId = this.currentMessageId ?? this.createId('msg')
     this.messages = [
       ...this.messages,
       {
@@ -656,33 +685,45 @@ class AgentLoopEngine {
         toolCalls,
       },
     ]
+
+    aiEventClient.emit('text:message:created', {
+      ...this.buildEventContext(),
+      messageId,
+      role: 'assistant',
+      content: this.accumulatedContent || '',
+      toolCalls,
+      timestamp: Date.now(),
+    })
   }
 
-  private collectClientState(): {
+  /**
+   * Extract client state (approvals and client tool results) from original messages.
+   * Called in the constructor BEFORE converting to ModelMessage format,
+   * because the parts array (which contains approval state) is lost during conversion.
+   */
+  private extractClientStateFromOriginalMessages(
+    originalMessages: Array<any>,
+  ): {
     approvals: Map<string, boolean>
     clientToolResults: Map<string, any>
   } {
     const approvals = new Map<string, boolean>()
     const clientToolResults = new Map<string, any>()
 
-    for (const message of this.messages) {
-      if (message.role === 'assistant' && (message as any).parts) {
-        const parts = (message as any).parts
-        for (const part of parts) {
-          if (
-            part.type === 'tool-call' &&
-            part.state === 'approval-responded' &&
-            part.approval
-          ) {
-            approvals.set(part.approval.id, part.approval.approved)
-          }
-
-          if (
-            part.type === 'tool-call' &&
-            part.output !== undefined &&
-            !part.approval
-          ) {
-            clientToolResults.set(part.id, part.output)
+    for (const message of originalMessages) {
+      if (message.role === 'assistant' && message.parts) {
+        for (const part of message.parts) {
+          if (part.type === 'tool-call') {
+            if (part.output !== undefined && !part.approval) {
+              clientToolResults.set(part.id, part.output)
+            }
+            if (
+              part.approval?.id &&
+              part.approval?.approved !== undefined &&
+              part.state === 'approval-responded'
+            ) {
+              approvals.set(part.approval.id, part.approval.approved)
+            }
           }
         }
       }
@@ -691,15 +732,45 @@ class AgentLoopEngine {
     return { approvals, clientToolResults }
   }
 
+  private collectClientState(): {
+    approvals: Map<string, boolean>
+    clientToolResults: Map<string, any>
+  } {
+    const approvals = new Map(this.initialApprovals)
+    const clientToolResults = new Map(this.initialClientToolResults)
+
+    for (const message of this.messages) {
+      if (message.role === 'tool' && message.toolCallId) {
+        let output: unknown
+        try {
+          output = JSON.parse(message.content as string)
+        } catch {
+          output = message.content
+        }
+        // Skip pendingExecution markers
+        if (
+          output &&
+          typeof output === 'object' &&
+          (output as any).pendingExecution === true
+        ) {
+          continue
+        }
+        clientToolResults.set(message.toolCallId, output)
+      }
+    }
+
+    return { approvals, clientToolResults }
+  }
+
   private emitApprovalRequests(
     approvals: Array<ApprovalRequest>,
-    doneChunk: DoneStreamChunk,
+    finishEvent: RunFinishedEvent,
   ): Array<StreamChunk> {
     const chunks: Array<StreamChunk> = []
 
     for (const approval of approvals) {
-      aiEventClient.emit('stream:approval-requested', {
-        streamId: this.streamId,
+      aiEventClient.emit('tools:approval:requested', {
+        ...this.buildEventContext(),
         messageId: this.currentMessageId || undefined,
         toolCallId: approval.toolCallId,
         toolName: approval.toolName,
@@ -708,17 +779,20 @@ class AgentLoopEngine {
         timestamp: Date.now(),
       })
 
+      // Emit a CUSTOM event for approval requests
       chunks.push({
-        type: 'approval-requested',
-        id: doneChunk.id,
-        model: doneChunk.model,
+        type: 'CUSTOM',
         timestamp: Date.now(),
-        toolCallId: approval.toolCallId,
-        toolName: approval.toolName,
-        input: approval.input,
-        approval: {
-          id: approval.approvalId,
-          needsApproval: true,
+        model: finishEvent.model,
+        name: 'approval-requested',
+        data: {
+          toolCallId: approval.toolCallId,
+          toolName: approval.toolName,
+          input: approval.input,
+          approval: {
+            id: approval.approvalId,
+            needsApproval: true,
+          },
         },
       })
     }
@@ -728,13 +802,13 @@ class AgentLoopEngine {
 
   private emitClientToolInputs(
     clientRequests: Array<ClientToolRequest>,
-    doneChunk: DoneStreamChunk,
+    finishEvent: RunFinishedEvent,
   ): Array<StreamChunk> {
     const chunks: Array<StreamChunk> = []
 
     for (const clientTool of clientRequests) {
-      aiEventClient.emit('stream:tool-input-available', {
-        streamId: this.streamId,
+      aiEventClient.emit('tools:input:available', {
+        ...this.buildEventContext(),
         messageId: this.currentMessageId || undefined,
         toolCallId: clientTool.toolCallId,
         toolName: clientTool.toolName,
@@ -742,14 +816,17 @@ class AgentLoopEngine {
         timestamp: Date.now(),
       })
 
+      // Emit a CUSTOM event for client tool inputs
       chunks.push({
-        type: 'tool-input-available',
-        id: doneChunk.id,
-        model: doneChunk.model,
+        type: 'CUSTOM',
         timestamp: Date.now(),
-        toolCallId: clientTool.toolCallId,
-        toolName: clientTool.toolName,
-        input: clientTool.input,
+        model: finishEvent.model,
+        name: 'tool-input-available',
+        data: {
+          toolCallId: clientTool.toolCallId,
+          toolName: clientTool.toolName,
+          input: clientTool.input,
+        },
       })
     }
 
@@ -758,14 +835,13 @@ class AgentLoopEngine {
 
   private emitToolResults(
     results: Array<ToolResult>,
-    doneChunk: DoneStreamChunk,
+    finishEvent: RunFinishedEvent,
   ): Array<StreamChunk> {
     const chunks: Array<StreamChunk> = []
 
     for (const result of results) {
-      aiEventClient.emit('tool:call-completed', {
-        requestId: this.requestId,
-        streamId: this.streamId,
+      aiEventClient.emit('tools:call:completed', {
+        ...this.buildEventContext(),
         messageId: this.currentMessageId || undefined,
         toolCallId: result.toolCallId,
         toolName: result.toolName,
@@ -775,16 +851,16 @@ class AgentLoopEngine {
       })
 
       const content = JSON.stringify(result.result)
-      const chunk: Extract<StreamChunk, { type: 'tool_result' }> = {
-        type: 'tool_result',
-        id: doneChunk.id,
-        model: doneChunk.model,
-        timestamp: Date.now(),
-        toolCallId: result.toolCallId,
-        content,
-      }
 
-      chunks.push(chunk)
+      // Emit TOOL_CALL_END event
+      chunks.push({
+        type: 'TOOL_CALL_END',
+        timestamp: Date.now(),
+        model: finishEvent.model,
+        toolCallId: result.toolCallId,
+        toolName: result.toolName,
+        result: content,
+      })
 
       this.messages = [
         ...this.messages,
@@ -794,17 +870,41 @@ class AgentLoopEngine {
           toolCallId: result.toolCallId,
         },
       ]
+
+      aiEventClient.emit('text:message:created', {
+        ...this.buildEventContext(),
+        messageId: this.createId('msg'),
+        role: 'tool',
+        content,
+        timestamp: Date.now(),
+      })
     }
 
     return chunks
   }
 
   private getPendingToolCallsFromMessages(): Array<ToolCall> {
-    const completedToolIds = new Set(
-      this.messages
-        .filter((message) => message.role === 'tool' && message.toolCallId)
-        .map((message) => message.toolCallId!),
-    )
+    const completedToolIds = new Set<string>()
+
+    for (const message of this.messages) {
+      if (message.role === 'tool' && message.toolCallId) {
+        let hasPendingExecution = false
+        if (typeof message.content === 'string') {
+          try {
+            const parsed = JSON.parse(message.content)
+            if (parsed.pendingExecution === true) {
+              hasPendingExecution = true
+            }
+          } catch {
+            // Not JSON, treat as regular tool result
+          }
+        }
+
+        if (!hasPendingExecution) {
+          completedToolIds.add(message.toolCallId)
+        }
+      }
+    }
 
     const pending: Array<ToolCall> = []
 
@@ -821,11 +921,11 @@ class AgentLoopEngine {
     return pending
   }
 
-  private createSyntheticDoneChunk(): DoneStreamChunk {
+  private createSyntheticFinishedEvent(): RunFinishedEvent {
     return {
-      type: 'done',
-      id: this.createId('pending'),
-      model: 'agent-loop',
+      type: 'RUN_FINISHED',
+      runId: this.createId('pending'),
+      model: this.adapterModel,
       timestamp: Date.now(),
       finishReason: 'tool_calls',
     }
@@ -847,6 +947,49 @@ class AgentLoopEngine {
 
   private isAborted(): boolean {
     return !!this.effectiveSignal?.aborted
+  }
+
+  private buildEventContext(): {
+    requestId: string
+    streamId: string
+    provider: string
+    model: string
+    clientId?: string
+    source?: 'client' | 'server'
+    systemPrompts?: Array<string>
+    toolNames?: Array<string>
+    options?: Record<string, unknown>
+    modelOptions?: Record<string, unknown>
+    messageCount: number
+    hasTools: boolean
+    streaming: boolean
+  } {
+    const toolNames = this.tools.map((t) => t.name)
+    return {
+      requestId: this.requestId,
+      streamId: this.streamId,
+      provider: this.adapterProvider,
+      model: this.adapterModel,
+      clientId: this.options.conversationId,
+      source: 'server',
+      systemPrompts:
+        this.systemPrompts.length > 0 ? this.systemPrompts : undefined,
+      toolNames: toolNames.length > 0 ? toolNames : undefined,
+      options: this.eventOptions,
+      modelOptions: this.eventModelOptions,
+      messageCount: this.initialMessageCount,
+      hasTools: this.tools.length > 0,
+      streaming: true,
+    }
+  }
+
+  private getContentString(content: ModelMessage['content']): string {
+    if (typeof content === 'string') return content
+    const textContent =
+      content
+        ?.map((part) => (part.type === 'text' ? part.content : ''))
+        .join('') || ''
+    return textContent
   }
 
   private setToolPhase(phase: ToolPhaseResult): void {
@@ -876,7 +1019,8 @@ function isDirectOptions(
 
 /**
  * Create a TextCreator function from direct options.
- * This wraps the chat() function with the adapter and model-specific options.
+ * This wraps the text() function with the adapter and model-specific options,
+ * using _skipEvents to prevent duplicate event emission.
  */
 function createTextFnFromDirectOptions(
   options: AgentLoopDirectOptions<AnyTextAdapter, z.ZodType | undefined>,
@@ -887,7 +1031,24 @@ function createTextFnFromDirectOptions(
   return ((
     creatorOptions: TextCreatorOptions & { outputSchema?: z.ZodType },
   ) => {
-    return chat({
+    if (creatorOptions.outputSchema !== undefined) {
+      // For structured output, call text() without _skipEvents since it's a final call
+      return text({
+        adapter,
+        messages: creatorOptions.messages,
+        tools: creatorOptions.tools as Array<Tool>,
+        systemPrompts: creatorOptions.systemPrompts,
+        abortController: creatorOptions.abortController,
+        temperature,
+        topP,
+        maxTokens,
+        metadata,
+        modelOptions,
+        outputSchema: creatorOptions.outputSchema,
+      })
+    }
+
+    return text({
       adapter,
       messages: creatorOptions.messages,
       tools: creatorOptions.tools as Array<Tool>,
@@ -898,8 +1059,7 @@ function createTextFnFromDirectOptions(
       maxTokens,
       metadata,
       modelOptions,
-      outputSchema: creatorOptions.outputSchema,
-      stream: creatorOptions.outputSchema === undefined,
+      _skipEvents: true,
     })
   }) as TextCreator
 }
@@ -1045,10 +1205,15 @@ export function agentLoop<
       return runStructuredAgentLoop(
         textFn,
         loopOptions as AgentLoopStructuredOptions<z.ZodType>,
+        directOptions.adapter,
       ) as Promise<z.infer<TSchema>>
     }
 
-    const engine = new AgentLoopEngine({ textFn, options: loopOptions })
+    const engine = new AgentLoopEngine({
+      textFn,
+      options: loopOptions,
+      adapter: directOptions.adapter,
+    })
     return engine.run()
   }
 
@@ -1072,10 +1237,11 @@ export function agentLoop<
 async function runStructuredAgentLoop<TSchema extends z.ZodType>(
   textFn: TextCreator,
   options: AgentLoopStructuredOptions<TSchema>,
+  adapter?: AnyTextAdapter,
 ): Promise<z.infer<TSchema>> {
   const { outputSchema, ...loopOptions } = options
 
-  const engine = new AgentLoopEngine({ textFn, options: loopOptions })
+  const engine = new AgentLoopEngine({ textFn, options: loopOptions, adapter })
 
   // Consume the stream to run the agentic loop
   for await (const _chunk of engine.run()) {
