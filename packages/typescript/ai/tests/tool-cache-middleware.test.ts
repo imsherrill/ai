@@ -160,7 +160,7 @@ describe('toolCacheMiddleware', () => {
         return { data: callCount }
       })
 
-      const { adapter } = createMockAdapter({
+      const { adapter: _adapter } = createMockAdapter({
         iterations: [
           [
             ev.runStarted(),
@@ -192,6 +192,7 @@ describe('toolCacheMiddleware', () => {
         {
           toolCall: {
             id: 'tc-1',
+            type: 'function',
             function: { name: 'getData', arguments: '{}' },
           },
           tool: tool,
@@ -211,6 +212,7 @@ describe('toolCacheMiddleware', () => {
         {
           toolCall: {
             id: 'tc-1',
+            type: 'function',
             function: { name: 'getData', arguments: '{}' },
           },
           tool: tool,
@@ -230,6 +232,7 @@ describe('toolCacheMiddleware', () => {
         {
           toolCall: {
             id: 'tc-2',
+            type: 'function',
             function: { name: 'getData', arguments: '{}' },
           },
           tool: tool,
@@ -251,6 +254,7 @@ describe('toolCacheMiddleware', () => {
         {
           toolCall: {
             id: 'tc-3',
+            type: 'function',
             function: { name: 'getData', arguments: '{}' },
           },
           tool: tool,
@@ -268,10 +272,6 @@ describe('toolCacheMiddleware', () => {
 
   it('should respect maxSize and evict oldest entries', async () => {
     const results: Array<unknown> = []
-    const tool = serverTool('lookup', (args) => {
-      const key = (args as { key: string }).key
-      return { value: `result-${key}` }
-    })
 
     const { adapter } = createMockAdapter({
       iterations: [
@@ -569,6 +569,7 @@ describe('toolCacheMiddleware', () => {
           {
             toolCall: {
               id: 'tc-1',
+              type: 'function',
               function: { name: 'getData', arguments: '{}' },
             },
             tool: tool,
@@ -591,6 +592,7 @@ describe('toolCacheMiddleware', () => {
           {
             toolCall: {
               id: 'tc-2',
+              type: 'function',
               function: { name: 'getData', arguments: '{}' },
             },
             tool: tool,
@@ -627,6 +629,7 @@ describe('toolCacheMiddleware', () => {
         {
           toolCall: {
             id: 'tc-1',
+            type: 'function',
             function: { name: 'search', arguments: '{"q":"hello"}' },
           },
           tool: tool,
@@ -647,6 +650,7 @@ describe('toolCacheMiddleware', () => {
         {
           toolCall: {
             id: 'tc-1',
+            type: 'function',
             function: { name: 'search', arguments: '{"q":"hello"}' },
           },
           tool: tool,

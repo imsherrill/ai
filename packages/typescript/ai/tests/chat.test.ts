@@ -63,8 +63,8 @@ describe('chat()', () => {
       await collectChunks(stream as AsyncIterable<StreamChunk>)
 
       expect(calls).toHaveLength(1)
-      expect(calls[0].messages).toBeDefined()
-      expect(calls[0].messages[0].role).toBe('user')
+      expect(calls[0]!.messages).toBeDefined()
+      expect((calls[0]!.messages as Array<{ role: string }>)[0]!.role).toBe('user')
     })
 
     it('should pass systemPrompts to the adapter', async () => {
@@ -80,7 +80,7 @@ describe('chat()', () => {
 
       await collectChunks(stream as AsyncIterable<StreamChunk>)
 
-      expect(calls[0].systemPrompts).toEqual(['You are a helpful assistant'])
+      expect(calls[0]!.systemPrompts).toEqual(['You are a helpful assistant'])
     })
 
     it('should pass temperature, topP, maxTokens to the adapter', async () => {
@@ -98,9 +98,9 @@ describe('chat()', () => {
 
       await collectChunks(stream as AsyncIterable<StreamChunk>)
 
-      expect(calls[0].temperature).toBe(0.5)
-      expect(calls[0].topP).toBe(0.9)
-      expect(calls[0].maxTokens).toBe(100)
+      expect(calls[0]!.temperature).toBe(0.5)
+      expect(calls[0]!.topP).toBe(0.9)
+      expect(calls[0]!.maxTokens).toBe(100)
     })
   })
 
@@ -221,9 +221,9 @@ describe('chat()', () => {
       expect(calls).toHaveLength(2)
 
       // Second call should have tool result in messages
-      const secondCallMessages = calls[1].messages
+      const secondCallMessages = calls[1]!.messages as Array<{ role: string }>
       const toolResultMsg = secondCallMessages.find(
-        (m: any) => m.role === 'tool',
+        (m) => m.role === 'tool',
       )
       expect(toolResultMsg).toBeDefined()
     })
@@ -313,9 +313,9 @@ describe('chat()', () => {
       expect(timeSpy).toHaveBeenCalledTimes(1)
 
       // Second adapter call should have both tool results
-      const secondCallMessages = calls[1].messages
+      const secondCallMessages = calls[1]!.messages as Array<{ role: string }>
       const toolResultMsgs = secondCallMessages.filter(
-        (m: any) => m.role === 'tool',
+        (m) => m.role === 'tool',
       )
       expect(toolResultMsgs).toHaveLength(2)
     })
@@ -477,8 +477,8 @@ describe('chat()', () => {
 
       // Adapter should have been called with the tool result in messages
       expect(calls).toHaveLength(1)
-      const adapterMessages = calls[0].messages
-      const toolMsg = adapterMessages.find((m: any) => m.role === 'tool')
+      const adapterMessages = calls[0]!.messages as Array<{ role: string }>
+      const toolMsg = adapterMessages.find((m) => m.role === 'tool')
       expect(toolMsg).toBeDefined()
     })
 
@@ -924,7 +924,7 @@ describe('chat()', () => {
       })
 
       await collectChunks(stream as AsyncIterable<StreamChunk>)
-      expect(calls[0].modelOptions).toEqual({ customParam: 'value' })
+      expect(calls[0]!.modelOptions).toEqual({ customParam: 'value' })
     })
 
     it('should handle TEXT_MESSAGE_CONTENT with content field', async () => {
