@@ -79,6 +79,8 @@ export type {
   ToolCallHookContext,
   BeforeToolCallDecision,
   AfterToolCallInfo,
+  IterationInfo,
+  ToolPhaseCompleteInfo,
   UsageInfo,
   FinishInfo,
   AbortInfo,
@@ -88,7 +90,10 @@ export type {
   ToolCacheEntry,
 } from './activities/chat/middleware/index'
 
-export { toolCacheMiddleware } from './activities/chat/middleware/index'
+export {
+  devtoolsMiddleware,
+  toolCacheMiddleware,
+} from './activities/chat/middleware/index'
 
 // All types
 export * from './types'

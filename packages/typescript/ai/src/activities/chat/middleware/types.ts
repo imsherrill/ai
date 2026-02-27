@@ -48,6 +48,49 @@ export interface ChatMiddlewareContext {
    * after the terminal hook (onFinish/onAbort/onError).
    */
   defer: (promise: Promise<unknown>) => void
+
+  // --- Provider / adapter info (immutable for the lifetime of the request) ---
+
+  /** Provider name (e.g., 'openai', 'anthropic') */
+  provider: string
+  /** Model identifier (e.g., 'gpt-4o') */
+  model: string
+  /** Source of the chat invocation — always 'server' for server-side chat */
+  source: 'client' | 'server'
+  /** Whether the chat is streaming */
+  streaming: boolean
+
+  // --- Config-derived info (may update per-iteration via onConfig) ---
+
+  /** System prompts configured for this chat */
+  systemPrompts: Array<string>
+  /** Names of configured tools, if any */
+  toolNames?: Array<string>
+  /** Flattened generation options (temperature, topP, maxTokens, metadata) */
+  options?: Record<string, unknown>
+  /** Provider-specific model options */
+  modelOptions?: Record<string, unknown>
+
+  // --- Computed info ---
+
+  /** Number of messages at the start of the request */
+  messageCount: number
+  /** Whether tools are configured */
+  hasTools: boolean
+
+  // --- Mutable per-iteration state ---
+
+  /** Current assistant message ID (changes per iteration) */
+  currentMessageId: string | null
+  /** Accumulated text content for the current iteration */
+  accumulatedContent: string
+
+  // --- References ---
+
+  /** Current messages array (read-only view) */
+  messages: ReadonlyArray<ModelMessage>
+  /** Generate a unique ID with the given prefix */
+  createId: (prefix: string) => string
 }
 
 // ===========================
@@ -124,6 +167,53 @@ export interface AfterToolCallInfo {
   /** The result (if ok) or error (if not ok) */
   result?: unknown
   error?: unknown
+}
+
+// ===========================
+// Iteration Info
+// ===========================
+
+/**
+ * Information passed to onIteration at the start of each agent loop iteration.
+ */
+export interface IterationInfo {
+  /** 0-based iteration index */
+  iteration: number
+  /** The assistant message ID created for this iteration */
+  messageId: string
+}
+
+// ===========================
+// Tool Phase Complete Info
+// ===========================
+
+/**
+ * Aggregate information passed to onToolPhaseComplete after all tool calls
+ * in an iteration have been processed.
+ */
+export interface ToolPhaseCompleteInfo {
+  /** Tool calls that were assigned to the assistant message */
+  toolCalls: Array<ToolCall>
+  /** Completed tool results */
+  results: Array<{
+    toolCallId: string
+    toolName: string
+    result: unknown
+    duration?: number
+  }>
+  /** Tools that need user approval */
+  needsApproval: Array<{
+    toolCallId: string
+    toolName: string
+    input: unknown
+    approvalId: string
+  }>
+  /** Tools that need client-side execution */
+  needsClientExecution: Array<{
+    toolCallId: string
+    toolName: string
+    input: unknown
+  }>
 }
 
 // ===========================
@@ -241,6 +331,15 @@ export interface ChatMiddleware {
   onStart?: (ctx: ChatMiddlewareContext) => void | Promise<void>
 
   /**
+   * Called at the start of each agent loop iteration, after a new assistant message ID
+   * is created. Use this to observe iteration boundaries.
+   */
+  onIteration?: (
+    ctx: ChatMiddlewareContext,
+    info: IterationInfo,
+  ) => void | Promise<void>
+
+  /**
    * Called for every chunk yielded by chat().
    * Can observe, transform, expand, or drop chunks.
    *
@@ -271,6 +370,15 @@ export interface ChatMiddleware {
   onAfterToolCall?: (
     ctx: ChatMiddlewareContext,
     info: AfterToolCallInfo,
+  ) => void | Promise<void>
+
+  /**
+   * Called after all tool calls in an iteration have been processed.
+   * Provides aggregate data about tool execution results, approvals, and client tools.
+   */
+  onToolPhaseComplete?: (
+    ctx: ChatMiddlewareContext,
+    info: ToolPhaseCompleteInfo,
   ) => void | Promise<void>
 
   /**

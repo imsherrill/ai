@@ -8,7 +8,9 @@ import type {
   ChatMiddlewareContext,
   ErrorInfo,
   FinishInfo,
+  IterationInfo,
   ToolCallHookContext,
+  ToolPhaseCompleteInfo,
   UsageInfo,
 } from './types'
 
@@ -179,6 +181,36 @@ export class MiddlewareRunner {
     for (const mw of this.middlewares) {
       if (mw.onError) {
         await mw.onError(ctx, info)
+      }
+    }
+  }
+
+  /**
+   * Run onIteration on all middleware in order.
+   * Called at the start of each agent loop iteration.
+   */
+  async runOnIteration(
+    ctx: ChatMiddlewareContext,
+    info: IterationInfo,
+  ): Promise<void> {
+    for (const mw of this.middlewares) {
+      if (mw.onIteration) {
+        await mw.onIteration(ctx, info)
+      }
+    }
+  }
+
+  /**
+   * Run onToolPhaseComplete on all middleware in order.
+   * Called after all tool calls in an iteration have been processed.
+   */
+  async runOnToolPhaseComplete(
+    ctx: ChatMiddlewareContext,
+    info: ToolPhaseCompleteInfo,
+  ): Promise<void> {
+    for (const mw of this.middlewares) {
+      if (mw.onToolPhaseComplete) {
+        await mw.onToolPhaseComplete(ctx, info)
       }
     }
   }

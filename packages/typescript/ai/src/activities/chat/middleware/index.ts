@@ -6,6 +6,8 @@ export type {
   ToolCallHookContext,
   BeforeToolCallDecision,
   AfterToolCallInfo,
+  IterationInfo,
+  ToolPhaseCompleteInfo,
   UsageInfo,
   FinishInfo,
   AbortInfo,
@@ -13,6 +15,8 @@ export type {
 } from './types'
 
 export { MiddlewareRunner } from './compose'
+
+export { devtoolsMiddleware } from './devtools-middleware'
 
 export { toolCacheMiddleware } from './tool-cache-middleware'
 export type {

@@ -5,7 +5,6 @@
  * This is a self-contained module with implementation, types, and JSDoc.
  */
 
-import { aiEventClient } from '../../event-client.js'
 import { streamToText } from '../../stream-to-response.js'
 import {
   MiddlewareAbortError,
@@ -20,6 +19,7 @@ import {
 import { maxIterations as maxIterationsStrategy } from './agent-loop-strategies'
 import { convertMessagesToModelMessages } from './messages'
 import { MiddlewareRunner } from './middleware/compose'
+import { devtoolsMiddleware } from './middleware/devtools-middleware'
 import type {
   ApprovalRequest,
   ClientToolRequest,
@@ -254,7 +254,6 @@ class TextEngine<
   private eventOptions?: Record<string, unknown>
   private eventToolNames?: Array<string>
   private finishedEvent: RunFinishedEvent | null = null
-  private shouldEmitStreamEnd = true
   private earlyTermination = false
   private toolPhase: ToolPhaseResult = 'continue'
   private cyclePhase: CyclePhase = 'processText'
@@ -301,8 +300,12 @@ class TextEngine<
       : undefined
     this.effectiveSignal = config.params.abortController?.signal
 
-    // Initialize middleware
-    this.middlewareRunner = new MiddlewareRunner(config.middleware || [])
+    // Initialize middleware — devtools middleware is always first
+    const allMiddleware = [
+      devtoolsMiddleware(),
+      ...(config.middleware || []),
+    ]
+    this.middlewareRunner = new MiddlewareRunner(allMiddleware)
     this.middlewareAbortController = new AbortController()
     this.middlewareCtx = {
       requestId: this.requestId,
@@ -320,6 +323,25 @@ class TextEngine<
       defer: (promise: Promise<unknown>) => {
         this.deferredPromises.push(promise)
       },
+      // Provider / adapter info
+      provider: config.adapter.name,
+      model: config.params.model,
+      source: 'server',
+      streaming: true,
+      // Config-derived (updated in beforeRun and applyMiddlewareConfig)
+      systemPrompts: this.systemPrompts,
+      toolNames: undefined,
+      options: undefined,
+      modelOptions: config.params.modelOptions,
+      // Computed
+      messageCount: this.initialMessageCount,
+      hasTools: this.tools.length > 0,
+      // Mutable per-iteration
+      currentMessageId: null,
+      accumulatedContent: '',
+      // References
+      messages: this.messages,
+      createId: (prefix: string) => this.createId(prefix),
     }
   }
 
@@ -338,18 +360,16 @@ class TextEngine<
 
     try {
       // Run initial onConfig (phase = init)
-      if (this.middlewareRunner.hasMiddleware) {
-        this.middlewareCtx.phase = 'init'
-        const initialConfig = this.buildMiddlewareConfig()
-        const transformedConfig = await this.middlewareRunner.runOnConfig(
-          this.middlewareCtx,
-          initialConfig,
-        )
-        this.applyMiddlewareConfig(transformedConfig)
+      this.middlewareCtx.phase = 'init'
+      const initialConfig = this.buildMiddlewareConfig()
+      const transformedConfig = await this.middlewareRunner.runOnConfig(
+        this.middlewareCtx,
+        initialConfig,
+      )
+      this.applyMiddlewareConfig(transformedConfig)
 
-        // Run onStart
-        await this.middlewareRunner.runOnStart(this.middlewareCtx)
-      }
+      // Run onStart (devtools middleware emits text:request:started and initial messages here)
+      await this.middlewareRunner.runOnStart(this.middlewareCtx)
 
       const pendingPhase = yield* this.checkForPendingToolCalls()
       if (pendingPhase === 'wait') {
@@ -361,20 +381,18 @@ class TextEngine<
           return
         }
 
-        this.beginCycle()
+        await this.beginCycle()
 
         if (this.cyclePhase === 'processText') {
           // Run onConfig before each model call (phase = beforeModel)
-          if (this.middlewareRunner.hasMiddleware) {
-            this.middlewareCtx.phase = 'beforeModel'
-            this.middlewareCtx.iteration = this.iterationCount
-            const iterConfig = this.buildMiddlewareConfig()
-            const transformedConfig = await this.middlewareRunner.runOnConfig(
-              this.middlewareCtx,
-              iterConfig,
-            )
-            this.applyMiddlewareConfig(transformedConfig)
-          }
+          this.middlewareCtx.phase = 'beforeModel'
+          this.middlewareCtx.iteration = this.iterationCount
+          const iterConfig = this.buildMiddlewareConfig()
+          const transformedConfig = await this.middlewareRunner.runOnConfig(
+            this.middlewareCtx,
+            iterConfig,
+          )
+          this.applyMiddlewareConfig(transformedConfig)
 
           yield* this.streamModelResponse()
         } else {
@@ -384,8 +402,8 @@ class TextEngine<
         this.endCycle()
       } while (this.shouldContinue())
 
-      // Call terminal onFinish hook
-      if (this.middlewareRunner.hasMiddleware && !this.terminalHookCalled) {
+      // Call terminal onFinish hook (skip when waiting for client — stream is paused, not finished)
+      if (!this.terminalHookCalled && this.toolPhase !== 'wait') {
         this.terminalHookCalled = true
         await this.middlewareRunner.runOnFinish(this.middlewareCtx, {
           finishReason: this.lastFinishReason,
@@ -395,7 +413,7 @@ class TextEngine<
         })
       }
     } catch (error: unknown) {
-      if (this.middlewareRunner.hasMiddleware && !this.terminalHookCalled) {
+      if (!this.terminalHookCalled) {
         this.terminalHookCalled = true
         if (error instanceof MiddlewareAbortError) {
           // Middleware abort decision — call onAbort, not onError
@@ -418,19 +436,13 @@ class TextEngine<
       }
     } finally {
       // Check for abort terminal hook
-      if (
-        this.middlewareRunner.hasMiddleware &&
-        !this.terminalHookCalled &&
-        this.isCancelled()
-      ) {
+      if (!this.terminalHookCalled && this.isCancelled()) {
         this.terminalHookCalled = true
         await this.middlewareRunner.runOnAbort(this.middlewareCtx, {
           reason: this.abortReason,
           duration: Date.now() - this.streamStartTime,
         })
       }
-
-      this.afterRun()
 
       // Await deferred promises (non-blocking side effects)
       if (this.deferredPromises.length > 0) {
@@ -443,7 +455,7 @@ class TextEngine<
     this.streamStartTime = Date.now()
     const { tools, temperature, topP, maxTokens, metadata } = this.params
 
-    // Gather flattened options into an object for event emission
+    // Gather flattened options into an object for context
     const options: Record<string, unknown> = {}
     if (temperature !== undefined) options.temperature = temperature
     if (topP !== undefined) options.topP = topP
@@ -453,70 +465,14 @@ class TextEngine<
     this.eventOptions = Object.keys(options).length > 0 ? options : undefined
     this.eventToolNames = tools?.map((t) => t.name)
 
-    aiEventClient.emit('text:request:started', {
-      ...this.buildTextEventContext(),
-      timestamp: Date.now(),
-    })
-
-    // Always emit messages for tracking:
-    // - For existing conversations (with conversationId): only emit the latest user message
-    // - For new conversations (without conversationId): emit all messages for reconstruction
-    const messagesToEmit = this.params.conversationId
-      ? this.messages.slice(-1).filter((m) => m.role === 'user')
-      : this.messages
-
-    messagesToEmit.forEach((message, index) => {
-      const messageIndex = this.params.conversationId
-        ? this.messages.length - 1
-        : index
-      const messageId = this.createId('msg')
-      const baseContext = this.buildTextEventContext()
-      const content = this.getContentString(message.content)
-
-      aiEventClient.emit('text:message:created', {
-        ...baseContext,
-        messageId,
-        role: message.role,
-        content,
-        toolCalls: message.toolCalls,
-        messageIndex,
-        timestamp: Date.now(),
-      })
-
-      if (message.role === 'user') {
-        aiEventClient.emit('text:message:user', {
-          ...baseContext,
-          messageId,
-          role: 'user',
-          content,
-          messageIndex,
-          timestamp: Date.now(),
-        })
-      }
-    })
+    // Update middleware context with computed fields
+    this.middlewareCtx.options = this.eventOptions
+    this.middlewareCtx.toolNames = this.eventToolNames
   }
 
-  private afterRun(): void {
-    if (!this.shouldEmitStreamEnd) {
-      return
-    }
-
-    const now = Date.now()
-    // Emit text:request:completed with final state
-    aiEventClient.emit('text:request:completed', {
-      ...this.buildTextEventContext(),
-      content: this.accumulatedContent,
-      messageId: this.currentMessageId || undefined,
-      finishReason: this.lastFinishReason || undefined,
-      usage: this.finishedEvent?.usage,
-      duration: now - this.streamStartTime,
-      timestamp: now,
-    })
-  }
-
-  private beginCycle(): void {
+  private async beginCycle(): Promise<void> {
     if (this.cyclePhase === 'processText') {
-      this.beginIteration()
+      await this.beginIteration()
     }
   }
 
@@ -530,18 +486,19 @@ class TextEngine<
     this.iterationCount++
   }
 
-  private beginIteration(): void {
+  private async beginIteration(): Promise<void> {
     this.currentMessageId = this.createId('msg')
     this.accumulatedContent = ''
     this.finishedEvent = null
 
-    const baseContext = this.buildTextEventContext()
-    aiEventClient.emit('text:message:created', {
-      ...baseContext,
+    // Update mutable context fields
+    this.middlewareCtx.currentMessageId = this.currentMessageId
+    this.middlewareCtx.accumulatedContent = ''
+
+    // Notify middleware of new iteration (devtools emits assistant message:created here)
+    await this.middlewareRunner.runOnIteration(this.middlewareCtx, {
+      iteration: this.iterationCount,
       messageId: this.currentMessageId,
-      role: 'assistant',
-      content: '',
-      timestamp: Date.now(),
     })
   }
 
@@ -560,9 +517,7 @@ class TextEngine<
         : undefined,
     }))
 
-    if (this.middlewareRunner.hasMiddleware) {
-      this.middlewareCtx.phase = 'modelStream'
-    }
+    this.middlewareCtx.phase = 'modelStream'
 
     for await (const chunk of this.adapter.chatStream({
       model: this.params.model,
@@ -582,28 +537,23 @@ class TextEngine<
 
       this.totalChunkCount++
 
-      // Pipe chunk through middleware
-      if (this.middlewareRunner.hasMiddleware) {
-        const outputChunks = await this.middlewareRunner.runOnChunk(
-          this.middlewareCtx,
-          chunk,
-        )
-        for (const outputChunk of outputChunks) {
-          yield outputChunk
-          this.handleStreamChunk(outputChunk)
-          this.middlewareCtx.chunkIndex++
-        }
+      // Pipe chunk through middleware (devtools middleware observes and emits events)
+      const outputChunks = await this.middlewareRunner.runOnChunk(
+        this.middlewareCtx,
+        chunk,
+      )
+      for (const outputChunk of outputChunks) {
+        yield outputChunk
+        this.handleStreamChunk(outputChunk)
+        this.middlewareCtx.chunkIndex++
+      }
 
-        // Handle usage via middleware
-        if (chunk.type === 'RUN_FINISHED' && chunk.usage) {
-          await this.middlewareRunner.runOnUsage(
-            this.middlewareCtx,
-            chunk.usage,
-          )
-        }
-      } else {
-        yield chunk
-        this.handleStreamChunk(chunk)
+      // Handle usage via middleware
+      if (chunk.type === 'RUN_FINISHED' && chunk.usage) {
+        await this.middlewareRunner.runOnUsage(
+          this.middlewareCtx,
+          chunk.usage,
+        )
       }
 
       if (this.earlyTermination) {
@@ -655,100 +605,35 @@ class TextEngine<
     } else {
       this.accumulatedContent += chunk.delta
     }
-    aiEventClient.emit('text:chunk:content', {
-      ...this.buildTextEventContext(),
-      messageId: this.currentMessageId || undefined,
-      content: this.accumulatedContent,
-      delta: chunk.delta,
-      timestamp: Date.now(),
-    })
   }
 
   private handleToolCallStartEvent(chunk: ToolCallStartEvent): void {
     this.toolCallManager.addToolCallStartEvent(chunk)
-    aiEventClient.emit('text:chunk:tool-call', {
-      ...this.buildTextEventContext(),
-      messageId: this.currentMessageId || undefined,
-      toolCallId: chunk.toolCallId,
-      toolName: chunk.toolName,
-      index: chunk.index ?? 0,
-      arguments: '',
-      timestamp: Date.now(),
-    })
   }
 
   private handleToolCallArgsEvent(chunk: ToolCallArgsEvent): void {
     this.toolCallManager.addToolCallArgsEvent(chunk)
-    aiEventClient.emit('text:chunk:tool-call', {
-      ...this.buildTextEventContext(),
-      messageId: this.currentMessageId || undefined,
-      toolCallId: chunk.toolCallId,
-      toolName: '',
-      index: 0,
-      arguments: chunk.delta,
-      timestamp: Date.now(),
-    })
   }
 
   private handleToolCallEndEvent(chunk: ToolCallEndEvent): void {
     this.toolCallManager.completeToolCall(chunk)
-    aiEventClient.emit('text:chunk:tool-result', {
-      ...this.buildTextEventContext(),
-      messageId: this.currentMessageId || undefined,
-      toolCallId: chunk.toolCallId,
-      result: chunk.result || '',
-      timestamp: Date.now(),
-    })
   }
 
   private handleRunFinishedEvent(chunk: RunFinishedEvent): void {
-    aiEventClient.emit('text:chunk:done', {
-      ...this.buildTextEventContext(),
-      messageId: this.currentMessageId || undefined,
-      finishReason: chunk.finishReason,
-      usage: chunk.usage,
-      timestamp: Date.now(),
-    })
-
-    if (chunk.usage) {
-      aiEventClient.emit('text:usage', {
-        ...this.buildTextEventContext(),
-        messageId: this.currentMessageId || undefined,
-        usage: chunk.usage,
-        timestamp: Date.now(),
-      })
-    }
-
     this.finishedEvent = chunk
     this.lastFinishReason = chunk.finishReason
   }
 
   private handleRunErrorEvent(
-    chunk: Extract<StreamChunk, { type: 'RUN_ERROR' }>,
+    _chunk: Extract<StreamChunk, { type: 'RUN_ERROR' }>,
   ): void {
-    aiEventClient.emit('text:chunk:error', {
-      ...this.buildTextEventContext(),
-      messageId: this.currentMessageId || undefined,
-      error: chunk.error.message,
-      timestamp: Date.now(),
-    })
     this.earlyTermination = true
-    this.shouldEmitStreamEnd = false
   }
 
   private handleStepFinishedEvent(
-    chunk: Extract<StreamChunk, { type: 'STEP_FINISHED' }>,
+    _chunk: Extract<StreamChunk, { type: 'STEP_FINISHED' }>,
   ): void {
-    // Handle thinking/reasoning content from STEP_FINISHED events
-    if (chunk.content || chunk.delta) {
-      aiEventClient.emit('text:chunk:thinking', {
-        ...this.buildTextEventContext(),
-        messageId: this.currentMessageId || undefined,
-        content: chunk.content || '',
-        delta: chunk.delta,
-        timestamp: Date.now(),
-      })
-    }
+    // State tracking for STEP_FINISHED is handled by middleware
   }
 
   private async *checkForPendingToolCalls(): AsyncGenerator<
@@ -776,29 +661,37 @@ class TextEngine<
     // Consume the async generator, yielding custom events and collecting the return value
     const executionResult = yield* this.drainToolCallGenerator(generator)
 
+    // Notify middleware of tool phase completion (devtools emits aggregate events here)
+    await this.middlewareRunner.runOnToolPhaseComplete(this.middlewareCtx, {
+      toolCalls: pendingToolCalls,
+      results: executionResult.results,
+      needsApproval: executionResult.needsApproval,
+      needsClientExecution: executionResult.needsClientExecution,
+    })
+
     if (
       executionResult.needsApproval.length > 0 ||
       executionResult.needsClientExecution.length > 0
     ) {
-      for (const chunk of this.emitApprovalRequests(
+      for (const chunk of this.buildApprovalChunks(
         executionResult.needsApproval,
         finishEvent,
       )) {
         yield chunk
       }
 
-      for (const chunk of this.emitClientToolInputs(
+      for (const chunk of this.buildClientToolChunks(
         executionResult.needsClientExecution,
         finishEvent,
       )) {
         yield chunk
       }
 
-      this.shouldEmitStreamEnd = false
+      this.setToolPhase('wait')
       return 'wait'
     }
 
-    const toolResultChunks = this.emitToolResults(
+    const toolResultChunks = this.buildToolResultChunks(
       executionResult.results,
       finishEvent,
     )
@@ -826,9 +719,7 @@ class TextEngine<
 
     this.addAssistantToolCallMessage(toolCalls)
 
-    if (this.middlewareRunner.hasMiddleware) {
-      this.middlewareCtx.phase = 'beforeTools'
-    }
+    this.middlewareCtx.phase = 'beforeTools'
 
     const { approvals, clientToolResults } = this.collectClientState()
 
@@ -838,37 +729,33 @@ class TextEngine<
       approvals,
       clientToolResults,
       (eventName, data) => this.createCustomEventChunk(eventName, data),
-      this.middlewareRunner.hasMiddleware
-        ? {
-            onBeforeToolCall: async (toolCall, tool, args) => {
-              const hookCtx = {
-                toolCall,
-                tool,
-                args,
-                toolName: toolCall.function.name,
-                toolCallId: toolCall.id,
-              }
-              return this.middlewareRunner.runOnBeforeToolCall(
-                this.middlewareCtx,
-                hookCtx,
-              )
-            },
-            onAfterToolCall: async (info) => {
-              await this.middlewareRunner.runOnAfterToolCall(
-                this.middlewareCtx,
-                info,
-              )
-            },
+      {
+        onBeforeToolCall: async (toolCall, tool, args) => {
+          const hookCtx = {
+            toolCall,
+            tool,
+            args,
+            toolName: toolCall.function.name,
+            toolCallId: toolCall.id,
           }
-        : undefined,
+          return this.middlewareRunner.runOnBeforeToolCall(
+            this.middlewareCtx,
+            hookCtx,
+          )
+        },
+        onAfterToolCall: async (info) => {
+          await this.middlewareRunner.runOnAfterToolCall(
+            this.middlewareCtx,
+            info,
+          )
+        },
+      },
     )
 
     // Consume the async generator, yielding custom events and collecting the return value
     const executionResult = yield* this.drainToolCallGenerator(generator)
 
-    if (this.middlewareRunner.hasMiddleware) {
-      this.middlewareCtx.phase = 'afterTools'
-    }
+    this.middlewareCtx.phase = 'afterTools'
 
     // Check if middleware aborted during tool execution
     if (this.isMiddlewareAborted()) {
@@ -876,18 +763,26 @@ class TextEngine<
       return
     }
 
+    // Notify middleware of tool phase completion (devtools emits aggregate events here)
+    await this.middlewareRunner.runOnToolPhaseComplete(this.middlewareCtx, {
+      toolCalls,
+      results: executionResult.results,
+      needsApproval: executionResult.needsApproval,
+      needsClientExecution: executionResult.needsClientExecution,
+    })
+
     if (
       executionResult.needsApproval.length > 0 ||
       executionResult.needsClientExecution.length > 0
     ) {
-      for (const chunk of this.emitApprovalRequests(
+      for (const chunk of this.buildApprovalChunks(
         executionResult.needsApproval,
         finishEvent,
       )) {
         yield chunk
       }
 
-      for (const chunk of this.emitClientToolInputs(
+      for (const chunk of this.buildClientToolChunks(
         executionResult.needsClientExecution,
         finishEvent,
       )) {
@@ -898,7 +793,7 @@ class TextEngine<
       return
     }
 
-    const toolResultChunks = this.emitToolResults(
+    const toolResultChunks = this.buildToolResultChunks(
       executionResult.results,
       finishEvent,
     )
@@ -921,7 +816,6 @@ class TextEngine<
   }
 
   private addAssistantToolCallMessage(toolCalls: Array<ToolCall>): void {
-    const messageId = this.currentMessageId ?? this.createId('msg')
     this.messages = [
       ...this.messages,
       {
@@ -930,15 +824,6 @@ class TextEngine<
         toolCalls,
       },
     ]
-
-    aiEventClient.emit('text:message:created', {
-      ...this.buildTextEventContext(),
-      messageId,
-      role: 'assistant',
-      content: this.accumulatedContent || '',
-      toolCalls,
-      timestamp: Date.now(),
-    })
   }
 
   /**
@@ -1019,24 +904,13 @@ class TextEngine<
     return { approvals, clientToolResults }
   }
 
-  private emitApprovalRequests(
+  private buildApprovalChunks(
     approvals: Array<ApprovalRequest>,
     finishEvent: RunFinishedEvent,
   ): Array<StreamChunk> {
     const chunks: Array<StreamChunk> = []
 
     for (const approval of approvals) {
-      aiEventClient.emit('tools:approval:requested', {
-        ...this.buildTextEventContext(),
-        messageId: this.currentMessageId || undefined,
-        toolCallId: approval.toolCallId,
-        toolName: approval.toolName,
-        input: approval.input,
-        approvalId: approval.approvalId,
-        timestamp: Date.now(),
-      })
-
-      // Emit a CUSTOM event for approval requests
       chunks.push({
         type: 'CUSTOM',
         timestamp: Date.now(),
@@ -1057,23 +931,13 @@ class TextEngine<
     return chunks
   }
 
-  private emitClientToolInputs(
+  private buildClientToolChunks(
     clientRequests: Array<ClientToolRequest>,
     finishEvent: RunFinishedEvent,
   ): Array<StreamChunk> {
     const chunks: Array<StreamChunk> = []
 
     for (const clientTool of clientRequests) {
-      aiEventClient.emit('tools:input:available', {
-        ...this.buildTextEventContext(),
-        messageId: this.currentMessageId || undefined,
-        toolCallId: clientTool.toolCallId,
-        toolName: clientTool.toolName,
-        input: clientTool.input,
-        timestamp: Date.now(),
-      })
-
-      // Emit a CUSTOM event for client tool inputs
       chunks.push({
         type: 'CUSTOM',
         timestamp: Date.now(),
@@ -1090,26 +954,15 @@ class TextEngine<
     return chunks
   }
 
-  private emitToolResults(
+  private buildToolResultChunks(
     results: Array<ToolResult>,
     finishEvent: RunFinishedEvent,
   ): Array<StreamChunk> {
     const chunks: Array<StreamChunk> = []
 
     for (const result of results) {
-      aiEventClient.emit('tools:call:completed', {
-        ...this.buildTextEventContext(),
-        messageId: this.currentMessageId || undefined,
-        toolCallId: result.toolCallId,
-        toolName: result.toolName,
-        result: result.result,
-        duration: result.duration ?? 0,
-        timestamp: Date.now(),
-      })
-
       const content = JSON.stringify(result.result)
 
-      // Emit TOOL_CALL_END event
       chunks.push({
         type: 'TOOL_CALL_END',
         timestamp: Date.now(),
@@ -1127,14 +980,6 @@ class TextEngine<
           toolCallId: result.toolCallId,
         },
       ]
-
-      aiEventClient.emit('text:message:created', {
-        ...this.buildTextEventContext(),
-        messageId: this.createId('msg'),
-        role: 'tool',
-        content,
-        timestamp: Date.now(),
-      })
     }
 
     return chunks
@@ -1243,55 +1088,17 @@ class TextEngine<
       metadata: config.metadata,
       modelOptions: config.modelOptions,
     }
-  }
 
-  private buildTextEventContext(): {
-    requestId: string
-    streamId: string
-    provider: string
-    model: string
-    clientId?: string
-    source?: 'client' | 'server'
-    systemPrompts?: Array<string>
-    toolNames?: Array<string>
-    options?: Record<string, unknown>
-    modelOptions?: Record<string, unknown>
-    messageCount: number
-    hasTools: boolean
-    streaming: boolean
-  } {
-    return {
-      requestId: this.requestId,
-      streamId: this.streamId,
-      provider: this.adapter.name,
-      model: this.params.model,
-      clientId: this.params.conversationId,
-      source: 'server',
-      systemPrompts:
-        this.systemPrompts.length > 0 ? this.systemPrompts : undefined,
-      toolNames: this.eventToolNames,
-      options: this.eventOptions,
-      modelOptions: this.params.modelOptions,
-      messageCount: this.initialMessageCount,
-      hasTools: this.tools.length > 0,
-      streaming: true,
-    }
-  }
-
-  private getContentString(content: ModelMessage['content']): string {
-    if (typeof content === 'string') return content
-    const text =
-      content
-        ?.map((part) => (part.type === 'text' ? part.content : ''))
-        .join('') || ''
-    return text
+    // Sync context fields that depend on config
+    this.middlewareCtx.messages = this.messages
+    this.middlewareCtx.systemPrompts = this.systemPrompts
+    this.middlewareCtx.hasTools = this.tools.length > 0
+    this.middlewareCtx.toolNames = this.tools.map((t) => t.name)
+    this.middlewareCtx.modelOptions = config.modelOptions
   }
 
   private setToolPhase(phase: ToolPhaseResult): void {
     this.toolPhase = phase
-    if (phase === 'wait') {
-      this.shouldEmitStreamEnd = false
-    }
   }
 
   /**
