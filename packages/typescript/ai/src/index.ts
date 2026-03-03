@@ -60,6 +60,13 @@ export {
   toHttpResponse,
 } from './stream-to-response'
 
+// Generation streaming helpers (for wrapping server-side activities as StreamChunk iterables)
+export {
+  streamGenerationResult,
+  streamVideoGeneration,
+  type StreamVideoGenerationOptions,
+} from './stream-generation'
+
 // Tool call management
 export { ToolCallManager } from './activities/chat/tools/tool-calls'
 

@@ -1,4 +1,6 @@
 export { ChatClient } from './chat-client'
+export { GenerationClient } from './generation-client'
+export { VideoGenerationClient } from './video-generation-client'
 export type {
   // Core message types (re-exported from @tanstack/ai via types.ts)
   UIMessage,
@@ -15,6 +17,22 @@ export type {
   // Multimodal content input type
   MultimodalContent,
 } from './types'
+// Generation client types
+export type {
+  InferGenerationOutput,
+  GenerationClientState,
+  GenerationClientOptions,
+  GenerationTransport,
+  VideoGenerationClientOptions,
+  VideoStatusInfo,
+  VideoGenerateResult,
+  ImageGenerateInput,
+  SpeechGenerateInput,
+  TranscriptionGenerateInput,
+  SummarizeGenerateInput,
+  VideoGenerateInput,
+} from './generation-types'
+export { GENERATION_EVENTS } from './generation-types'
 export { clientTools, createChatClientOptions } from './types'
 export type {
   ExtractToolNames,
