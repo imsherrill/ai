@@ -216,9 +216,7 @@ function ImageGenPage() {
                 />
               </svg>
             </div>
-            <p className="text-sm">
-              Enter a prompt below to generate an image
-            </p>
+            <p className="text-sm">Enter a prompt below to generate an image</p>
           </div>
         )}
 

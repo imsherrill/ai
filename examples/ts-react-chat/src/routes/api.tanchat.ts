@@ -72,7 +72,9 @@ const addToCartToolServer = addToCartToolDef.server((args, context) => {
 const loggingMiddleware: ChatMiddleware = {
   name: 'logging',
   onConfig(ctx, config) {
-    console.log(`[logging] onConfig iteration=${ctx.iteration} model=${ctx.model} tools=${config.tools.length}`)
+    console.log(
+      `[logging] onConfig iteration=${ctx.iteration} model=${ctx.model} tools=${config.tools.length}`,
+    )
   },
   onStart(ctx) {
     console.log(`[logging] onStart requestId=${ctx.requestId}`)
@@ -84,13 +86,19 @@ const loggingMiddleware: ChatMiddleware = {
     console.log(`[logging] onBeforeToolCall tool=${toolCtx.toolName}`)
   },
   onAfterToolCall(ctx, info) {
-    console.log(`[logging] onAfterToolCall tool=${info.toolName} result=${JSON.stringify(info.result).slice(0, 100)}`)
+    console.log(
+      `[logging] onAfterToolCall tool=${info.toolName} result=${JSON.stringify(info.result).slice(0, 100)}`,
+    )
   },
   onFinish(ctx, info) {
-    console.log(`[logging] onFinish reason=${info.finishReason} iterations=${ctx.iteration}`)
+    console.log(
+      `[logging] onFinish reason=${info.finishReason} iterations=${ctx.iteration}`,
+    )
   },
   onUsage(ctx, usage) {
-    console.log(`[logging] onUsage tokens=${usage.totalTokens} input=${usage.promptTokens} output=${usage.completionTokens}, total: ${usage.totalTokens}`)
+    console.log(
+      `[logging] onUsage tokens=${usage.totalTokens} input=${usage.promptTokens} output=${usage.completionTokens}, total: ${usage.totalTokens}`,
+    )
   },
 }
 

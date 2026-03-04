@@ -14,15 +14,17 @@ export const Route = createFileRoute('/api/image-gen')({
         }
 
         if (!prompt) {
-          return new Response(
-            JSON.stringify({ error: 'Prompt is required' }),
-            { status: 400, headers: { 'Content-Type': 'application/json' } },
-          )
+          return new Response(JSON.stringify({ error: 'Prompt is required' }), {
+            status: 400,
+            headers: { 'Content-Type': 'application/json' },
+          })
         }
 
         try {
           const result = await generateImage({
-            adapter: openRouterImage((model || 'openai/gpt-5-image-mini') as 'openai/gpt-5-image-mini'),
+            adapter: openRouterImage(
+              (model || 'openai/gpt-5-image-mini') as 'openai/gpt-5-image-mini',
+            ),
             prompt,
             ...(size ? { size: size as any } : {}),
           })
@@ -38,7 +40,9 @@ export const Route = createFileRoute('/api/image-gen')({
             stack: error?.stack,
           })
           return new Response(
-            JSON.stringify({ error: error.message || 'Image generation failed' }),
+            JSON.stringify({
+              error: error.message || 'Image generation failed',
+            }),
             { status: 500, headers: { 'Content-Type': 'application/json' } },
           )
         }
