@@ -500,6 +500,32 @@ export interface Tool<
 
   /** Additional metadata for adapters or custom extensions */
   metadata?: Record<string, any>
+
+  /**
+   * Optional transform to filter tool input arguments before they reach the client.
+   *
+   * When set, the client receives the transformed version of the tool's input
+   * instead of the raw arguments. The full input is always sent to the LLM.
+   * Useful for hiding verbose or sensitive input data (e.g., generated code)
+   * from the client UI while preserving it for model reasoning.
+   *
+   * @param args - The full parsed input arguments
+   * @returns The filtered input to send to the client
+   */
+  clientInput?: (args: any) => unknown
+
+  /**
+   * Optional transform to filter tool output results before they reach the client.
+   *
+   * When set, the client receives the transformed version of the tool's result
+   * instead of the full output. The full result is always sent to the LLM.
+   * Useful for hiding sensitive data (PII, internal scores, credentials)
+   * from the client UI while preserving it for model reasoning.
+   *
+   * @param result - The full tool execution result
+   * @returns The filtered result to send to the client
+   */
+  clientOutput?: (result: any) => unknown
 }
 
 export interface ToolConfig {

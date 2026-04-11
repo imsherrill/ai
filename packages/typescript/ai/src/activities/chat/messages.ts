@@ -3,6 +3,7 @@ import type {
   MessagePart,
   ModelMessage,
   TextPart,
+  Tool,
   ToolCallPart,
   UIMessage,
 } from '../../types'
@@ -433,4 +434,145 @@ export function normalizeToUIMessage(
  */
 export function generateMessageId(): string {
   return `msg-${Date.now()}-${Math.random().toString(36).substring(7)}`
+}
+
+// ===========================
+// Client Message Filtering
+// ===========================
+
+/**
+ * Build a map from tool name to tool, and a helper to resolve
+ * the tool name for a given toolCallId from the preceding assistant message.
+ */
+function buildToolLookup(tools: Array<Tool>): Map<string, Tool> {
+  return new Map(tools.map((t) => [t.name, t]))
+}
+
+/**
+ * Filter an array of ModelMessages, applying clientInput/clientOutput
+ * transforms from tool definitions. The result is suitable for sending
+ * to the client -- the LLM's full context is preserved server-side.
+ *
+ * @param messages - The full server-side ModelMessage array
+ * @param tools - Tool definitions with optional clientInput/clientOutput transforms
+ * @returns A new array of ModelMessages with filtered tool data
+ */
+export function toClientMessages(
+  messages: Array<ModelMessage>,
+  tools: Array<Tool>,
+): Array<ModelMessage> {
+  const toolMap = buildToolLookup(tools)
+
+  // Track toolCallId -> toolName from assistant messages so we can
+  // look up the tool for subsequent tool-result messages.
+  const callIdToToolName = new Map<string, string>()
+
+  return messages.map((msg) => {
+    // Filter tool call arguments in assistant messages
+    if (msg.role === 'assistant' && msg.toolCalls && msg.toolCalls.length > 0) {
+      const filteredToolCalls = msg.toolCalls.map((tc) => {
+        const toolName = tc.function.name
+        callIdToToolName.set(tc.id, toolName)
+        const tool = toolMap.get(toolName)
+
+        if (tool?.clientInput) {
+          const parsed = JSON.parse(tc.function.arguments)
+          const filtered = tool.clientInput(parsed)
+          return {
+            ...tc,
+            function: {
+              ...tc.function,
+              arguments: JSON.stringify(filtered),
+            },
+          }
+        }
+        return tc
+      })
+
+      return { ...msg, toolCalls: filteredToolCalls }
+    }
+
+    // Filter tool results
+    if (msg.role === 'tool' && msg.toolCallId) {
+      const toolName = callIdToToolName.get(msg.toolCallId)
+      const tool = toolName ? toolMap.get(toolName) : undefined
+
+      if (tool?.clientOutput && typeof msg.content === 'string') {
+        const parsed = JSON.parse(msg.content)
+        const filtered = tool.clientOutput(parsed)
+        return { ...msg, content: JSON.stringify(filtered) }
+      }
+    }
+
+    return msg
+  })
+}
+
+/**
+ * Filter an array of UIMessages, applying clientInput/clientOutput
+ * transforms from tool definitions. The result is suitable for sending
+ * to the client for hydration -- tool-call arguments and tool-result
+ * content are filtered in place.
+ *
+ * @param messages - The full UIMessage array (e.g., from modelMessagesToUIMessages)
+ * @param tools - Tool definitions with optional clientInput/clientOutput transforms
+ * @returns A new array of UIMessages with filtered tool data
+ */
+export function toClientUIMessages(
+  messages: Array<UIMessage>,
+  tools: Array<Tool>,
+): Array<UIMessage> {
+  const toolMap = buildToolLookup(tools)
+
+  // Track toolCallId -> toolName across all messages
+  const callIdToToolName = new Map<string, string>()
+
+  return messages.map((msg) => {
+    let hasFiltered = false
+    const filteredParts = msg.parts.map((part) => {
+      if (part.type === 'tool-call') {
+        const tool = toolMap.get(part.name)
+        callIdToToolName.set(part.id, part.name)
+
+        const needsInputFilter = !!tool?.clientInput
+        const needsOutputFilter = !!tool?.clientOutput && part.output !== undefined
+
+        if (needsInputFilter || needsOutputFilter) {
+          hasFiltered = true
+          let filteredPart = { ...part }
+          if (needsInputFilter) {
+            const parsed = JSON.parse(part.arguments)
+            const filtered = tool!.clientInput!(parsed)
+            filteredPart = {
+              ...filteredPart,
+              arguments: JSON.stringify(filtered),
+            }
+          }
+          if (needsOutputFilter) {
+            filteredPart = {
+              ...filteredPart,
+              output: tool!.clientOutput!(part.output),
+            }
+          }
+          return filteredPart
+        }
+      }
+
+      if (part.type === 'tool-result') {
+        const toolName = callIdToToolName.get(part.toolCallId)
+        const tool = toolName ? toolMap.get(toolName) : undefined
+
+        if (tool?.clientOutput && part.content) {
+          hasFiltered = true
+          const parsed = JSON.parse(part.content)
+          const filtered = tool.clientOutput(parsed)
+          return { ...part, content: JSON.stringify(filtered) }
+        }
+      }
+
+      return part
+    })
+
+    return hasFiltered ? { ...msg, parts: filteredParts } : msg
+  })
 }

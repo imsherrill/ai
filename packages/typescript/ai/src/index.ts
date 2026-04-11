@@ -133,6 +133,8 @@ export {
   modelMessageToUIMessage,
   modelMessagesToUIMessages,
   normalizeToUIMessage,
+  toClientMessages,
+  toClientUIMessages,
 } from './activities/chat/messages'
 
 // Stream processing (unified for server and client)
