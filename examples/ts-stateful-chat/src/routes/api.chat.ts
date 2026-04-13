@@ -216,7 +216,12 @@ function createFallbackAdapter(): AnyTextAdapter {
 
 function getExampleAdapter(): AnyTextAdapter {
   const apiKey = getExampleOpenAIKey()
-  if (!apiKey) {
+  const useOpenAI =
+    process.env.TANSTACK_AI_STATEFUL_CHAT_USE_OPENAI === 'true' ||
+    (import.meta.env as Record<string, string | undefined>)
+      .TANSTACK_AI_STATEFUL_CHAT_USE_OPENAI === 'true'
+
+  if (!apiKey || !useOpenAI) {
     return createFallbackAdapter()
   }
 

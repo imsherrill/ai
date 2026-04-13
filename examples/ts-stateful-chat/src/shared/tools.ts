@@ -6,7 +6,7 @@ import { z } from 'zod'
  * - clientInput: hides the raw code from the client, shows only description
  * - clientOutput: hides internal result data, shows only success/timing
  */
-export const executeTypescript = toolDefinition({
+export const executeTypescriptTool = toolDefinition({
   name: 'execute_typescript',
   description:
     'Execute TypeScript code in a sandbox. Use this to perform calculations, data transformations, or any computation.',
@@ -27,7 +27,9 @@ export const executeTypescript = toolDefinition({
     success: result.success,
     executionTimeMs: result.executionTimeMs,
   }),
-}).server(async (args) => {
+})
+
+export const executeTypescript = executeTypescriptTool.server(async (args) => {
   // Simulate code execution
   const start = Date.now()
   let result: unknown
@@ -60,7 +62,7 @@ export const executeTypescript = toolDefinition({
  * - clientOutput strips PII (email, SSN, internal score)
  * - clientInput is not set, so the input passes through unchanged
  */
-export const lookupUser = toolDefinition({
+export const lookupUserTool = toolDefinition({
   name: 'lookup_user',
   description: 'Look up a user by their ID. Returns user profile information.',
   inputSchema: z.object({
@@ -77,7 +79,9 @@ export const lookupUser = toolDefinition({
     id: result.id,
     name: result.name,
   }),
-}).server(async ({ userId }) => {
+})
+
+export const lookupUser = lookupUserTool.server(async ({ userId }) => {
   // Simulated user database
   const users: Record<string, any> = {
     '123': {
@@ -113,7 +117,7 @@ export const lookupUser = toolDefinition({
  * Get current weather for a location.
  * No client filtering -- all data is safe for the client.
  */
-export const getWeather = toolDefinition({
+export const getWeatherTool = toolDefinition({
   name: 'get_weather',
   description: 'Get the current weather for a location.',
   inputSchema: z.object({
@@ -124,7 +128,9 @@ export const getWeather = toolDefinition({
     condition: z.string(),
     humidity: z.number(),
   }),
-}).server(async ({ location }) => {
+})
+
+export const getWeather = getWeatherTool.server(async ({ location }) => {
   // Simulated weather data
   return {
     temperature: 72 + Math.floor(Math.random() * 20 - 10),
@@ -134,6 +140,13 @@ export const getWeather = toolDefinition({
     humidity: 40 + Math.floor(Math.random() * 40),
   }
 })
+
+/** All server tools for use in the chat endpoint */
+export const chatTools = [
+  executeTypescriptTool,
+  lookupUserTool,
+  getWeatherTool,
+] as const
 
 /** All server tools for use in the chat endpoint */
 export const serverTools = [executeTypescript, lookupUser, getWeather]

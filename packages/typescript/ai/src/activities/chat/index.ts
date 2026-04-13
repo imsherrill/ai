@@ -1340,7 +1340,7 @@ class TextEngine<
   private applyMiddlewareConfig(config: ChatMiddlewareConfig): void {
     this.messages = config.messages
     this.systemPrompts = config.systemPrompts
-    this.tools = config.tools
+    this.tools = [...config.tools]
     this.params = {
       ...this.params,
       temperature: config.temperature,

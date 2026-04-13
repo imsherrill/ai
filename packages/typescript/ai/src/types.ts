@@ -1,4 +1,4 @@
-import type { StandardJSONSchemaV1 } from '@standard-schema/spec'
+import type { StandardJSONSchemaV1, StandardSchemaV1 } from '@standard-schema/spec'
 
 /**
  * Tool call states - track the lifecycle of a tool call
@@ -83,6 +83,20 @@ export type SchemaInput = StandardJSONSchemaV1<any, any> | JSONSchema
  */
 export type InferSchemaType<T> =
   T extends StandardJSONSchemaV1<infer TInput, unknown> ? TInput : unknown
+
+/**
+ * Client projection definition for tool inputs or outputs.
+ *
+ * Supports either:
+ * - a synchronous transform function
+ * - a Standard Schema compliant schema used as a projection/validation target
+ *
+ * When a Standard Schema schema is provided, the projected client value is the
+ * schema's inferred type.
+ */
+export type ClientProjection<TValue = unknown, TProjected = unknown> =
+  | ((value: TValue) => TProjected)
+  | StandardSchemaV1<TProjected, unknown>
 
 export interface ToolCall {
   id: string
@@ -502,30 +516,32 @@ export interface Tool<
   metadata?: Record<string, any>
 
   /**
-   * Optional transform to filter tool input arguments before they reach the client.
+   * Optional projection used to filter tool input arguments before they reach the client.
    *
-   * When set, the client receives the transformed version of the tool's input
+   * When set, the client receives the projected version of the tool's input
    * instead of the raw arguments. The full input is always sent to the LLM.
    * Useful for hiding verbose or sensitive input data (e.g., generated code)
    * from the client UI while preserving it for model reasoning.
    *
-   * @param args - The full parsed input arguments
-   * @returns The filtered input to send to the client
+   * Accepts either:
+   * - a synchronous transform function
+   * - a Standard Schema validator used to shape the client-visible value
    */
-  clientInput?: (args: any) => unknown
+  clientInput?: ClientProjection<any>
 
   /**
-   * Optional transform to filter tool output results before they reach the client.
+   * Optional projection used to filter tool output results before they reach the client.
    *
-   * When set, the client receives the transformed version of the tool's result
+   * When set, the client receives the projected version of the tool's result
    * instead of the full output. The full result is always sent to the LLM.
    * Useful for hiding sensitive data (PII, internal scores, credentials)
    * from the client UI while preserving it for model reasoning.
    *
-   * @param result - The full tool execution result
-   * @returns The filtered result to send to the client
+   * Accepts either:
+   * - a synchronous transform function
+   * - a Standard Schema validator used to shape the client-visible value
    */
-  clientOutput?: (result: any) => unknown
+  clientOutput?: ClientProjection<any>
 }
 
 export interface ToolConfig {

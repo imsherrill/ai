@@ -1,5 +1,7 @@
 import type {
   AnyClientTool,
+  InferToolClientInput,
+  InferToolClientOutput,
   InferToolInput,
   InferToolOutput,
 } from '@tanstack/ai'
@@ -38,4 +40,26 @@ export type ExtractToolOutput<
 > =
   TName extends ExtractToolNames<TTools>
     ? InferToolOutput<FindTool<TTools, TName>>
+    : any
+
+/**
+ * Extract the projected client input type for a specific tool by name.
+ */
+export type ExtractToolClientInput<
+  TTools extends ReadonlyArray<AnyClientTool>,
+  TName extends string,
+> =
+  TName extends ExtractToolNames<TTools>
+    ? InferToolClientInput<FindTool<TTools, TName>>
+    : any
+
+/**
+ * Extract the projected client output type for a specific tool by name.
+ */
+export type ExtractToolClientOutput<
+  TTools extends ReadonlyArray<AnyClientTool>,
+  TName extends string,
+> =
+  TName extends ExtractToolNames<TTools>
+    ? InferToolClientOutput<FindTool<TTools, TName>>
     : any

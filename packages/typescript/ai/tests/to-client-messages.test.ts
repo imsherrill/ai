@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest'
+import { z } from 'zod'
 import type { ModelMessage, Tool, UIMessage } from '../src/types'
 import {
   toClientMessages,
@@ -8,8 +9,8 @@ import {
 function makeTool(
   name: string,
   opts?: {
-    clientInput?: (args: any) => unknown
-    clientOutput?: (result: any) => unknown
+    clientInput?: Tool['clientInput']
+    clientOutput?: Tool['clientOutput']
   },
 ): Tool {
   return {
@@ -113,6 +114,58 @@ describe('toClientMessages', () => {
     expect(filtered[1]!.toolCalls![0]!.function.arguments).toBe(
       JSON.stringify({ userId: '123' }),
     )
+  })
+
+  it('should support schema-based client projections', () => {
+    const tools = [
+      makeTool('execute_typescript', {
+        clientInput: z.object({
+          description: z.string(),
+        }),
+        clientOutput: z.object({
+          success: z.boolean(),
+        }),
+      }),
+    ]
+
+    const messages: ModelMessage[] = [
+      { role: 'user', content: 'Run some code' },
+      {
+        role: 'assistant',
+        content: null,
+        toolCalls: [
+          {
+            id: 'tc1',
+            type: 'function',
+            function: {
+              name: 'execute_typescript',
+              arguments: JSON.stringify({
+                typescriptCode: 'const total = orders.reduce(...)',
+                description: 'Aggregate order totals',
+              }),
+            },
+          },
+        ],
+      },
+      {
+        role: 'tool',
+        content: JSON.stringify({
+          success: true,
+          logs: ['internal'],
+          result: { total: 42 },
+        }),
+        toolCallId: 'tc1',
+      },
+    ]
+
+    const filtered = toClientMessages(messages, tools)
+
+    expect(filtered[1]!.toolCalls![0]!.function.arguments).toBe(
+      JSON.stringify({ description: 'Aggregate order totals' }),
+    )
+    expect(JSON.parse(filtered[2]!.content as string)).toEqual({
+      success: true,
+    })
   })
 
   it('should pass through messages for tools without filters', () => {
@@ -379,6 +432,70 @@ describe('toClientUIMessages', () => {
     // Tool result filtered
     const trPart = filtered[0]!.parts[1] as any
     expect(JSON.parse(trPart.content)).toEqual({ id: '123', name: 'Alice' })
+  })
+
+  it('should support schema-based projections for hydration', () => {
+    const tools = [
+      makeTool('execute_typescript', {
+        clientInput: z.object({
+          description: z.string(),
+        }),
+        clientOutput: z.object({
+          success: z.boolean(),
+          executionTimeMs: z.number(),
+        }),
+      }),
+    ]
+
+    const messages: UIMessage[] = [
+      {
+        id: 'msg1',
+        role: 'assistant',
+        parts: [
+          {
+            type: 'tool-call',
+            id: 'tc1',
+            name: 'execute_typescript',
+            arguments: JSON.stringify({
+              typescriptCode: 'console.log(secretToken)',
+              description: 'Inspect execution environment',
+            }),
+            state: 'input-complete',
+            output: {
+              success: true,
+              executionTimeMs: 12,
+              logs: ['internal only'],
+            },
+          },
+          {
+            type: 'tool-result',
+            toolCallId: 'tc1',
+            content: JSON.stringify({
+              success: true,
+              executionTimeMs: 12,
+              logs: ['internal only'],
+            }),
+            state: 'complete',
+          },
+        ],
+      },
+    ]
+
+    const filtered = toClientUIMessages(messages, tools)
+    const tcPart = filtered[0]!.parts[0] as any
+    const trPart = filtered[0]!.parts[1] as any
+
+    expect(JSON.parse(tcPart.arguments)).toEqual({
+      description: 'Inspect execution environment',
+    })
+    expect(tcPart.output).toEqual({
+      success: true,
+      executionTimeMs: 12,
+    })
+    expect(JSON.parse(trPart.content)).toEqual({
+      success: true,
+      executionTimeMs: 12,
+    })
   })
 
   it('should preserve malformed tool result parts during hydration', () => {

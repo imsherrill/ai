@@ -4,9 +4,9 @@ import type {
   ChunkStrategy,
   ContentPart,
   DocumentPart,
+  InferToolClientInput,
+  InferToolClientOutput,
   ImagePart,
-  InferToolInput,
-  InferToolOutput,
   ModelMessage,
   StreamChunk,
   VideoPart,
@@ -93,8 +93,8 @@ type ToolCallPartForTool<T> = T extends AnyClientTool
       id: string
       name: T['name']
       arguments: string // JSON string (may be incomplete)
-      /** Parsed tool input (typed from inputSchema) */
-      input?: InferToolInput<T>
+      /** Parsed tool input after client projection */
+      input?: InferToolClientInput<T>
       state: ToolCallState
       /** Approval metadata if tool requires user approval */
       approval?: {
@@ -102,8 +102,8 @@ type ToolCallPartForTool<T> = T extends AnyClientTool
         needsApproval: boolean // Always true if present
         approved?: boolean // User's decision (undefined until responded)
       }
-      /** Tool execution output (for client tools or after approval) */
-      output?: InferToolOutput<T>
+      /** Tool execution output after client projection */
+      output?: InferToolClientOutput<T>
     }
   : never
 

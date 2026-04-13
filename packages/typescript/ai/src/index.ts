@@ -46,6 +46,8 @@ export {
   type InferToolName,
   type InferToolInput,
   type InferToolOutput,
+  type InferToolClientInput,
+  type InferToolClientOutput,
 } from './activities/chat/tools/tool-definition'
 
 // Schema conversion (Standard JSON Schema compliant)
