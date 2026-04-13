@@ -57,7 +57,10 @@ export interface UseChatReturn<
    * Send a message and get a response.
    * Can be a simple string or multimodal content with images, audio, etc.
    */
-  sendMessage: (content: string | MultimodalContent) => Promise<void>
+  sendMessage: (
+    content: string | MultimodalContent,
+    body?: Record<string, any>,
+  ) => Promise<void>
 
   /**
    * Append a message to the conversation

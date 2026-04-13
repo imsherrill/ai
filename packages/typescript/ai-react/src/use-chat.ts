@@ -143,8 +143,8 @@ export function useChat<TTools extends ReadonlyArray<AnyClientTool> = any>(
   // closures from each render are picked up without recreating the client.
 
   const sendMessage = useCallback(
-    async (content: string | MultimodalContent) => {
-      await client.sendMessage(content)
+    async (content: string | MultimodalContent, body?: Record<string, any>) => {
+      await client.sendMessage(content, body)
     },
     [client],
   )

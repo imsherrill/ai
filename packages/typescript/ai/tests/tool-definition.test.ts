@@ -309,8 +309,8 @@ describe('toolDefinition', () => {
   })
 
   it('should propagate clientInput and clientOutput through .server()', () => {
-    const clientInputFn = (args: { code: string }) => ({})
-    const clientOutputFn = (result: { score: number }) => ({})
+    const clientInputFn = (_args: { code: string }) => ({})
+    const clientOutputFn = (_result: { score: number }) => ({})
 
     const tool = toolDefinition({
       name: 'serverFiltered',
@@ -328,8 +328,8 @@ describe('toolDefinition', () => {
   })
 
   it('should propagate clientInput and clientOutput through .client()', () => {
-    const clientInputFn = (args: { code: string }) => ({})
-    const clientOutputFn = (result: { score: number }) => ({})
+    const clientInputFn = (_args: { code: string }) => ({})
+    const clientOutputFn = (_result: { score: number }) => ({})
 
     const tool = toolDefinition({
       name: 'clientFiltered',

@@ -129,8 +129,11 @@ export function useChat<TTools extends ReadonlyArray<AnyClientTool> = any>(
   // Callback options are read through `options.xxx` at call time, so reactive
   // or mutated options propagate without recreating the client.
 
-  const sendMessage = async (content: string | MultimodalContent) => {
-    await client().sendMessage(content)
+  const sendMessage = async (
+    content: string | MultimodalContent,
+    body?: Record<string, any>,
+  ) => {
+    await client().sendMessage(content, body)
   }
 
   const append = async (message: ModelMessage | UIMessage<TTools>) => {

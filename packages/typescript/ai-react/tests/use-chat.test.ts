@@ -216,6 +216,36 @@ describe('useChat', () => {
       }
     })
 
+    it('should forward per-message body overrides', async () => {
+      const onConnect = vi.fn()
+      const adapter = createMockConnectionAdapter({
+        chunks: createTextChunks('Hello, world!'),
+        onConnect,
+      })
+      const { result } = renderUseChat({
+        connection: adapter,
+        body: { conversationId: 'base-id' },
+      })
+
+      await result.current.sendMessage('Hello', {
+        conversationId: 'override-id',
+        route: 'follow-up',
+      })
+
+      await waitFor(() => {
+        expect(onConnect).toHaveBeenCalled()
+      })
+
+      expect(onConnect).toHaveBeenCalledWith(
+        expect.any(Array),
+        {
+          conversationId: 'override-id',
+          route: 'follow-up',
+        },
+        expect.any(AbortSignal),
+      )
+    })
+
     it('should create assistant message from stream chunks', async () => {
       const chunks = createTextChunks('Hello, world!')
       const adapter = createMockConnectionAdapter({ chunks })

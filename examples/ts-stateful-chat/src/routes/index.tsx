@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
-import { useChat } from '@tanstack/ai-react'
-import { fetchServerStateful } from '@/lib/server-stateful-adapter'
+import { fetchServerSentEvents, useChat } from '@tanstack/ai-react'
 import type { UIMessage } from '@tanstack/ai-client'
 
 export const Route = createFileRoute('/')({
@@ -9,7 +8,9 @@ export const Route = createFileRoute('/')({
 })
 
 function Home() {
-  const [conversationId, setConversationId] = useState(() => crypto.randomUUID())
+  const [conversationId, setConversationId] = useState<string>(() =>
+    crypto.randomUUID(),
+  )
   const [conversations, setConversations] = useState<
     Array<{ id: string; createdAt: string; messageCount: number }>
   >([])
@@ -119,8 +120,23 @@ function ChatPanel({
   inputRef: React.RefObject<HTMLInputElement | null>
 }) {
   const { messages, sendMessage, isLoading } = useChat({
-    connection: fetchServerStateful('/api/chat'),
-    body: { chatId: conversationId },
+    connection: fetchServerSentEvents('/api/chat', {
+      buildRequestBody: ({ messages, data }) => {
+        const latestMessage = messages[messages.length - 1]
+
+        return {
+          conversationId: data?.conversationId,
+          event:
+            latestMessage && 'parts' in latestMessage && latestMessage.role === 'user'
+              ? {
+                  type: 'user-message',
+                  message: latestMessage,
+                }
+              : undefined,
+        }
+      },
+    }),
+    body: { conversationId },
     initialMessages,
   })
 

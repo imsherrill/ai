@@ -21,6 +21,10 @@ import {
   parseWithStandardSchema,
 } from './tools/schema-converter'
 import { maxIterations as maxIterationsStrategy } from './agent-loop-strategies'
+import {
+  buildToolLookup,
+  projectOutboundChunk,
+} from './client-projection'
 import { convertMessagesToModelMessages } from './messages'
 import { MiddlewareRunner } from './middleware/compose'
 import type {
@@ -265,8 +269,10 @@ class TextEngine<
   private params: TParams
   private systemPrompts: Array<string>
   private tools: Array<Tool>
+  private toolLookup: Map<string, Tool>
   private readonly loopStrategy: AgentLoopStrategy
   private toolCallManager: ToolCallManager
+  private readonly outboundToolCallNames = new Map<string, string>()
   private readonly lazyToolManager: LazyToolManager
   private readonly initialMessageCount: number
   private readonly requestId: string
@@ -338,6 +344,7 @@ class TextEngine<
       this.messages,
     )
     this.tools = this.lazyToolManager.getActiveTools()
+    this.toolLookup = buildToolLookup(this.tools)
     this.toolCallManager = new ToolCallManager(this.tools)
     this.requestId = this.createId('chat')
     this.streamId = this.createId('stream')
@@ -619,20 +626,8 @@ class TextEngine<
 
       this.totalChunkCount++
 
-      // Process the original (unstripped) chunk for internal state management
-      // BEFORE middleware, so fields like finishReason, delta, etc. are available
-      this.handleStreamChunk(chunk)
-
-      // Pipe chunk through middleware (devtools middleware observes; strip-to-spec cleans)
-      const outputChunks = await this.middlewareRunner.runOnChunk(
-        this.middlewareCtx,
-        chunk,
-      )
-      for (const outputChunk of outputChunks) {
-        this.logger.output(`type=${outputChunk.type}`, { chunk: outputChunk })
-        yield outputChunk
-        this.middlewareCtx.chunkIndex++
-      }
+      this.handleRawModelChunk(chunk)
+      yield* this.emitOutboundChunk(chunk, this.getRawArgsForChunk(chunk))
 
       // Handle usage via middleware
       if (chunk.type === 'RUN_FINISHED' && chunk.usage) {
@@ -688,6 +683,61 @@ class TextEngine<
         // - no special handling needed in chat activity
         break
     }
+  }
+
+  private handleRawModelChunk(chunk: StreamChunk): void {
+    if (
+      chunk.type === 'TOOL_CALL_START' ||
+      chunk.type === 'TOOL_CALL_ARGS' ||
+      chunk.type === 'TOOL_CALL_END'
+    ) {
+      this.handleStreamChunk(chunk)
+    }
+  }
+
+  private handleOutboundChunk(chunk: StreamChunk): void {
+    if (
+      chunk.type === 'TEXT_MESSAGE_CONTENT' ||
+      chunk.type === 'RUN_FINISHED' ||
+      chunk.type === 'RUN_ERROR' ||
+      chunk.type === 'STEP_FINISHED'
+    ) {
+      this.handleStreamChunk(chunk)
+    }
+  }
+
+  private async *emitOutboundChunk(
+    chunk: StreamChunk,
+    rawArgsForCall?: string,
+  ): AsyncGenerator<StreamChunk> {
+    const projectedChunks = projectOutboundChunk(
+      chunk,
+      this.toolLookup,
+      this.outboundToolCallNames,
+      rawArgsForCall,
+    )
+
+    for (const projectedChunk of projectedChunks) {
+      const outputChunks = await this.middlewareRunner.runOnChunk(
+        this.middlewareCtx,
+        projectedChunk,
+      )
+
+      for (const outputChunk of outputChunks) {
+        this.logger.output(`type=${outputChunk.type}`, { chunk: outputChunk })
+        yield outputChunk
+        this.handleOutboundChunk(outputChunk)
+        this.middlewareCtx.chunkIndex++
+      }
+    }
+  }
+
+  private getRawArgsForChunk(chunk: StreamChunk): string | undefined {
+    if (!('toolCallId' in chunk) || typeof chunk.toolCallId !== 'string') {
+      return undefined
+    }
+
+    return this.toolCallManager.getToolCallArguments(chunk.toolCallId)
   }
 
   // ===========================
@@ -1038,6 +1088,7 @@ class TextEngine<
     // Refresh tools if lazy tools were discovered in this batch
     if (this.lazyToolManager.hasNewlyDiscoveredTools()) {
       this.tools = this.lazyToolManager.getActiveTools()
+      this.toolLookup = buildToolLookup(this.tools)
       this.toolCallManager = new ToolCallManager(this.tools)
       this.setToolPhase('continue')
       return
@@ -1357,6 +1408,7 @@ class TextEngine<
     this.messages = config.messages
     this.systemPrompts = config.systemPrompts
     this.tools = config.tools
+    this.toolLookup = buildToolLookup(this.tools)
     this.params = {
       ...this.params,
       temperature: config.temperature,
@@ -1385,14 +1437,7 @@ class TextEngine<
   private async *pipeThroughMiddleware(
     chunk: StreamChunk,
   ): AsyncGenerator<StreamChunk, void, void> {
-    const outputChunks = await this.middlewareRunner.runOnChunk(
-      this.middlewareCtx,
-      chunk,
-    )
-    for (const outputChunk of outputChunks) {
-      yield outputChunk
-      this.middlewareCtx.chunkIndex++
-    }
+    yield* this.emitOutboundChunk(chunk, this.getRawArgsForChunk(chunk))
   }
 
   /**

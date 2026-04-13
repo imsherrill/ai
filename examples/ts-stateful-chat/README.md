@@ -27,9 +27,8 @@ Jack Herrington approved exploration of this direction. The architecture: server
 ### This example
 
 - **ConversationStore** (`src/lib/conversation-store.ts`) -- JSON file persistence in `/tmp/tanstack-ai-conversations/` behind a DB-like interface
-- **Server endpoints** (`src/routes/api.chat.ts`) -- POST sends a message (server loads history, calls `chat()`, persists), GET rehydrates with filtered UIMessages via `toClientUIMessages()`
-- **Custom connection adapter** (`src/lib/server-stateful-adapter.ts`) -- sends only `{ conversationId, message }` instead of full history
-- **Client filter middleware** (`src/lib/client-filter-middleware.ts`) -- `onChunk` middleware that filters `TOOL_CALL_END.input` via `clientInput`
+- **Server endpoints** (`src/routes/api.chat.ts`) -- POST accepts `{ conversationId, event }`, loads full history, calls `chat()`, persists the full transcript, and GET rehydrates filtered UIMessages via `toClientUIMessages()`
+- **Built-in fetch adapter request shaping** (`src/routes/index.tsx`) -- uses `fetchServerSentEvents(..., { buildRequestBody })` to send only `{ conversationId, event }` instead of the full history
 - **3 example tools** (`src/shared/tools.ts`):
   - `execute_typescript` -- `clientInput` hides raw code, `clientOutput` hides internal result data
   - `lookup_user` -- `clientOutput` strips PII (email, SSN, internal score)
@@ -40,11 +39,11 @@ Jack Herrington approved exploration of this direction. The architecture: server
 ```
 Client                          Server
   |                               |
-  |-- POST {chatId, message} ---> |
+  |-- POST {conversationId, event}|
   |                               | load(chatId) -> messages from DB
-  |                               | messages.push(user message)
-  |                               | chat({ messages, tools, middleware })
-  |                               |   middleware filters chunks via clientInput
+  |                               | append new event to full transcript
+  |                               | chat({ messages, tools })
+  |                               |   core projects outbound tool data
   |                               |   onFinish persists full messages to DB
   | <--- SSE stream (filtered) ---|
   |                               |
@@ -70,39 +69,22 @@ pnpm dev
 # Opens on http://localhost:3001
 ```
 
-Requires `OPENAI_API_KEY` in your environment.
+If `OPENAI_API_KEY` is available, the example uses `openaiText('gpt-4o-mini')`.
+If it is not available, the route falls back to a small local adapter so the
+server-stateful flow, tool projection, and hydration path still work in local
+development.
 
 ## What works
 
 - Server-stateful architecture end-to-end
 - Persistence (JSON files, conversation list in sidebar)
+- Live streaming uses the same tool projection rules as hydration
 - Rehydration with `clientOutput` filtering -- reloading a conversation shows `{"id":"123","name":"Alice Johnson"}` instead of full record with SSN/email/internalScore
 - `toClientUIMessages()` correctly applies filters on hydration path
 - All three tools callable by the LLM
 
-## Known issues to discuss
+## Notes
 
-### 1. `onChunk` middleware doesn't see tool result chunks
-
-`buildToolResultChunks` in `TextEngine` yields `TOOL_CALL_END` chunks through `processToolCalls()`, which bypasses the `onChunk` middleware pipeline (only `streamModelResponse` pipes through middleware). This means `clientOutput` can't filter tool results during live streaming -- only during rehydration.
-
-This is likely a bug/oversight in the engine. For a complete solution, `processToolCalls()` chunks should flow through `onChunk` middleware too.
-
-### 2. `useChat.sendMessage` drops per-message body
-
-The React hook signature is `sendMessage(content)` -- it doesn't forward the second `body` parameter that `ChatClient.sendMessage(content, body)` supports. The adapter works around this by extracting the latest user message from the messages array.
-
-### 3. ChatClient hardcodes `conversationId` override
-
-Line 585 of `chat-client.ts`: `conversationId: this.uniqueId` always overwrites whatever the user sets in the `body` option. The adapter works around this by using a separate key (`chatId`).
-
-### 4. Live stream vs. rehydration asymmetry
-
-Because of issue #1, the client sees full unfiltered tool results during the live stream but sees filtered results after reload. For a complete implementation, the engine needs to pipe `processToolCalls()` chunks through middleware.
-
-## Next steps
-
-- Fix the engine to pipe tool result chunks through `onChunk` middleware
-- Consider whether `useChat.sendMessage` should forward the body parameter
-- Consider a `serverStateful` option on ChatClient that changes the default behavior (don't send full history, use server-provided conversationId)
-- Consider promoting `toClientMessages`/`toClientUIMessages` to a first-class concept in the library
+- The server still owns the full `ModelMessage[]` transcript. The client receives a projected UI view.
+- The example stays storage-agnostic. Swap the JSON store for a database and keep the same request/hydration flow.
+- `buildRequestBody` is what makes the built-in fetch adapter fit the server-stateful recipe without a custom transport.
