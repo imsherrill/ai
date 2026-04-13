@@ -5,6 +5,10 @@ import type {
   Tool,
   UIMessage,
 } from '../../types'
+import {
+  isStandardSchema,
+  parseWithStandardSchema,
+} from './tools/schema-converter'
 
 function tryParseJson(value: string): { ok: true; value: unknown } | { ok: false } {
   try {
@@ -14,7 +18,36 @@ function tryParseJson(value: string): { ok: true; value: unknown } | { ok: false
   }
 }
 
-export function buildToolLookup(tools: Array<Tool>): Map<string, Tool> {
+function applyClientProjection(
+  projection: Tool['clientInput'] | Tool['clientOutput'] | undefined,
+  rawValue: unknown,
+): { value: unknown; projected: boolean } {
+  if (!projection) {
+    return { value: rawValue, projected: false }
+  }
+
+  if (typeof projection === 'function') {
+    return {
+      value: projection(rawValue as never),
+      projected: true,
+    }
+  }
+
+  if (!isStandardSchema(projection)) {
+    return { value: rawValue, projected: false }
+  }
+
+  try {
+    return {
+      value: parseWithStandardSchema(projection, rawValue),
+      projected: true,
+    }
+  } catch {
+    return { value: rawValue, projected: false }
+  }
+}
+
+export function buildToolLookup(tools: ReadonlyArray<Tool>): Map<string, Tool> {
   return new Map(tools.map((tool) => [tool.name, tool]))
 }
 
@@ -35,10 +68,13 @@ export function projectToolArguments(
     return { arguments: rawArguments, projected: false }
   }
 
-  const filtered = tool.clientInput(parsed.value)
+  const filtered = applyClientProjection(tool.clientInput, parsed.value)
+  if (!filtered.projected) {
+    return { arguments: rawArguments, projected: false }
+  }
   return {
-    arguments: JSON.stringify(filtered),
-    input: filtered,
+    arguments: JSON.stringify(filtered.value),
+    input: filtered.value,
     projected: true,
   }
 }
@@ -51,9 +87,10 @@ export function projectToolInputValue(
     return { input: rawInput, projected: false }
   }
 
+  const projected = applyClientProjection(tool.clientInput, rawInput)
   return {
-    input: tool.clientInput(rawInput),
-    projected: true,
+    input: projected.value,
+    projected: projected.projected,
   }
 }
 
@@ -74,10 +111,13 @@ export function projectToolResult(
     return { result: rawResult, projected: false }
   }
 
-  const filtered = tool.clientOutput(parsed.value)
+  const filtered = applyClientProjection(tool.clientOutput, parsed.value)
+  if (!filtered.projected) {
+    return { result: rawResult, projected: false }
+  }
   return {
-    result: JSON.stringify(filtered),
-    output: filtered,
+    result: JSON.stringify(filtered.value),
+    output: filtered.value,
     projected: true,
   }
 }

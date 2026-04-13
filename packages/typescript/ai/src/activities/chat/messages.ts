@@ -460,7 +460,7 @@ export function generateMessageId(): string {
  */
 export function toClientMessages(
   messages: Array<ModelMessage>,
-  tools: Array<Tool>,
+  tools: ReadonlyArray<Tool>,
 ): Array<ModelMessage> {
   return projectToClientMessages(messages, buildToolLookup(tools))
 }
@@ -477,7 +477,7 @@ export function toClientMessages(
  */
 export function toClientUIMessages(
   messages: Array<UIMessage>,
-  tools: Array<Tool>,
+  tools: ReadonlyArray<Tool>,
 ): Array<UIMessage> {
   return projectToClientUIMessages(messages, buildToolLookup(tools))
 }

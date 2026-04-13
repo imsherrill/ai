@@ -2,6 +2,10 @@ import { useState, useEffect, useRef } from 'react'
 import { createFileRoute } from '@tanstack/react-router'
 import { fetchServerSentEvents, useChat } from '@tanstack/ai-react'
 import type { UIMessage } from '@tanstack/ai-client'
+import { chatTools } from '../shared/tools'
+
+type ChatTools = typeof chatTools
+type ChatUIMessage = UIMessage<ChatTools>
 
 export const Route = createFileRoute('/')({
   component: Home,
@@ -14,7 +18,7 @@ function Home() {
   const [conversations, setConversations] = useState<
     Array<{ id: string; createdAt: string; messageCount: number }>
   >([])
-  const [initialMessages, setInitialMessages] = useState<Array<UIMessage>>([])
+  const [initialMessages, setInitialMessages] = useState<Array<ChatUIMessage>>([])
   const [hydrated, setHydrated] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
 
@@ -31,7 +35,7 @@ function Home() {
     setHydrated(false)
     fetch(`/api/chat?conversationId=${conversationId}`)
       .then((r) => r.json())
-      .then((msgs: Array<UIMessage>) => {
+      .then((msgs: Array<ChatUIMessage>) => {
         setInitialMessages(msgs)
         setHydrated(true)
       })
@@ -116,7 +120,7 @@ function ChatPanel({
   inputRef,
 }: {
   conversationId: string
-  initialMessages: Array<UIMessage>
+  initialMessages: Array<ChatUIMessage>
   inputRef: React.RefObject<HTMLInputElement | null>
 }) {
   const { messages, sendMessage, isLoading } = useChat({
@@ -138,13 +142,15 @@ function ChatPanel({
     }),
     body: { conversationId },
     initialMessages,
+    tools: chatTools,
   })
+  const displayMessages = normalizeDisplayMessages(messages)
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages])
+  }, [displayMessages])
 
   const send = (text: string) => {
     if (!text.trim()) return
@@ -165,7 +171,7 @@ function ChatPanel({
 
       {/* Messages */}
       <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
-        {messages.length === 0 && (
+        {displayMessages.length === 0 && (
           <div className="text-center text-gray-400 mt-20">
             <p className="text-lg">Start a conversation</p>
             <p className="text-sm mt-2">
@@ -173,7 +179,7 @@ function ChatPanel({
             </p>
           </div>
         )}
-        {messages.map((msg) => (
+        {displayMessages.map((msg) => (
           <MessageBubble key={msg.id} message={msg} />
         ))}
         <div ref={messagesEndRef} />
@@ -213,8 +219,132 @@ function ChatPanel({
   )
 }
 
-function MessageBubble({ message }: { message: UIMessage }) {
+function normalizeDisplayMessages(
+  messages: Array<ChatUIMessage>,
+): Array<ChatUIMessage> {
+  const normalized: Array<ChatUIMessage> = []
+  let assistantGroup: ChatUIMessage | null = null
+
+  const flushAssistantGroup = () => {
+    if (assistantGroup) {
+      normalized.push(assistantGroup)
+      assistantGroup = null
+    }
+  }
+
+  for (const message of messages) {
+    if (message.role !== 'assistant') {
+      flushAssistantGroup()
+      normalized.push(message)
+      continue
+    }
+
+    if (!assistantGroup) {
+      assistantGroup = { ...message, parts: [...message.parts] }
+      continue
+    }
+
+    const mergedParts: Array<ChatUIMessage['parts'][number]> = [
+      ...assistantGroup.parts,
+    ]
+
+    for (const part of message.parts) {
+      if (part.type === 'tool-call') {
+        const existingIndex = mergedParts.findIndex(
+          (existing: ChatUIMessage['parts'][number]) =>
+            existing.type === 'tool-call' &&
+            (existing.id === part.id ||
+              (existing.name === part.name &&
+                existing.arguments === part.arguments)),
+        )
+
+        if (existingIndex >= 0) {
+          mergedParts[existingIndex] = part
+        } else {
+          mergedParts.push(part)
+        }
+        continue
+      }
+
+      if (part.type === 'tool-result') {
+        const existingIndex = mergedParts.findIndex(
+          (existing: ChatUIMessage['parts'][number]) =>
+            existing.type === 'tool-result' &&
+            existing.toolCallId === part.toolCallId,
+        )
+
+        if (existingIndex >= 0) {
+          mergedParts[existingIndex] = part
+        } else {
+          mergedParts.push(part)
+        }
+        continue
+      }
+
+      if (part.type === 'text') {
+        const existingIndex = mergedParts.findIndex(
+          (existing: ChatUIMessage['parts'][number]) =>
+            existing.type === 'text' && existing.content === part.content,
+        )
+
+        if (existingIndex === -1) {
+          mergedParts.push(part)
+        }
+        continue
+      }
+
+      mergedParts.push(part)
+    }
+
+    assistantGroup = {
+      ...assistantGroup,
+      id: message.id,
+      createdAt: message.createdAt ?? assistantGroup.createdAt,
+      parts: mergedParts,
+    }
+  }
+
+  flushAssistantGroup()
+  return normalized
+}
+
+function renderToolSummary(part: Extract<ChatUIMessage['parts'][number], { type: 'tool-call' }>, resultContent?: string) {
+  return (
+    <div className="my-2 p-3 bg-gray-50 border border-gray-200 rounded text-sm">
+      <div className="font-medium text-gray-700">Tool: {part.name}</div>
+      <div className="mt-2">
+        <span className="text-gray-500 text-xs">Input (client view):</span>
+        <pre className="text-xs bg-gray-100 p-1 rounded mt-0.5 overflow-x-auto">
+          {part.input ? JSON.stringify(part.input, null, 2) : part.arguments}
+        </pre>
+      </div>
+      {part.output !== undefined && (
+        <div className="mt-2">
+          <span className="text-gray-500 text-xs">Output (client view):</span>
+          <pre className="text-xs bg-gray-100 p-1 rounded mt-0.5 overflow-x-auto">
+            {JSON.stringify(part.output, null, 2)}
+          </pre>
+        </div>
+      )}
+      {part.output === undefined && resultContent && (
+        <div className="mt-2">
+          <span className="text-gray-500 text-xs">Result (client view):</span>
+          <pre className="text-xs bg-gray-100 p-1 rounded mt-0.5 overflow-x-auto">
+            {resultContent}
+          </pre>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function MessageBubble({ message }: { message: ChatUIMessage }) {
   const isUser = message.role === 'user'
+  const resultByToolCallId = new Map(
+    message.parts
+      .filter((part): part is Extract<ChatUIMessage['parts'][number], { type: 'tool-result' }> => part.type === 'tool-result')
+      .map((part) => [part.toolCallId, part]),
+  )
 
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
@@ -235,31 +365,28 @@ function MessageBubble({ message }: { message: UIMessage }) {
           }
           if (part.type === 'tool-call') {
             return (
-              <div
-                key={i}
-                className="my-2 p-2 bg-gray-50 border border-gray-200 rounded text-sm"
-              >
-                <div className="font-medium text-gray-700">
-                  Tool: {part.name}
-                </div>
-                <div className="mt-1">
-                  <span className="text-gray-500 text-xs">Input (client view):</span>
-                  <pre className="text-xs bg-gray-100 p-1 rounded mt-0.5 overflow-x-auto">
-                    {part.arguments}
-                  </pre>
-                </div>
-                {part.output !== undefined && (
-                  <div className="mt-1">
-                    <span className="text-gray-500 text-xs">Output (client view):</span>
-                    <pre className="text-xs bg-gray-100 p-1 rounded mt-0.5 overflow-x-auto">
-                      {JSON.stringify(part.output, null, 2)}
-                    </pre>
-                  </div>
+              <div key={i}>
+                {renderToolSummary(
+                  part,
+                  resultByToolCallId.get(part.id)?.content,
                 )}
               </div>
             )
           }
           if (part.type === 'tool-result') {
+            const matchingToolCall = message.parts.find(
+              (
+                candidate,
+              ): candidate is Extract<
+                ChatUIMessage['parts'][number],
+                { type: 'tool-call' }
+              > => candidate.type === 'tool-call' && candidate.id === part.toolCallId,
+            )
+
+            if (matchingToolCall) {
+              return null
+            }
+
             return (
               <div
                 key={i}

@@ -1255,6 +1255,7 @@ class TextEngine<
 
     for (const result of results) {
       const content = JSON.stringify(result.result)
+      let input: unknown
 
       // Emit TOOL_CALL_START + TOOL_CALL_ARGS before TOOL_CALL_END so that
       // the client can reconstruct the full tool call during continuations.
@@ -1276,6 +1277,12 @@ class TextEngine<
           delta: args,
           args,
         } as StreamChunk)
+
+        try {
+          input = JSON.parse(args)
+        } catch {
+          // Preserve the previous chunk shape when historical args are malformed.
+        }
       }
 
       chunks.push({
@@ -1285,6 +1292,7 @@ class TextEngine<
         toolCallId: result.toolCallId,
         toolCallName: result.toolName,
         toolName: result.toolName,
+        ...(input !== undefined ? { input } : {}),
         result: content,
       } as StreamChunk)
 
@@ -1407,7 +1415,7 @@ class TextEngine<
   private applyMiddlewareConfig(config: ChatMiddlewareConfig): void {
     this.messages = config.messages
     this.systemPrompts = config.systemPrompts
-    this.tools = config.tools
+    this.tools = [...config.tools]
     this.toolLookup = buildToolLookup(this.tools)
     this.params = {
       ...this.params,

@@ -19,7 +19,8 @@ Jack Herrington approved exploration of this direction. The architecture: server
 
 ### Core library changes (non-breaking, additive)
 
-- `clientInput` and `clientOutput` optional transform functions on the `Tool` interface (`packages/typescript/ai/src/types.ts`)
+- `clientInput` and `clientOutput` optional client projection hooks on the `Tool` interface (`packages/typescript/ai/src/types.ts`)
+- Each projection can be either a synchronous transform function or a Standard Schema validator such as Zod
 - Propagated through `ToolDefinitionConfig`, `ClientTool`, and `.server()`/`.client()` builders
 - `toClientMessages(messages, tools)` and `toClientUIMessages(messages, tools)` utilities that apply filters to produce the client view of a message array
 - Exported from `@tanstack/ai`
@@ -29,6 +30,7 @@ Jack Herrington approved exploration of this direction. The architecture: server
 - **ConversationStore** (`src/lib/conversation-store.ts`) -- JSON file persistence in `/tmp/tanstack-ai-conversations/` behind a DB-like interface
 - **Server endpoints** (`src/routes/api.chat.ts`) -- POST accepts `{ conversationId, event }`, loads full history, calls `chat()`, persists the full transcript, and GET rehydrates filtered UIMessages via `toClientUIMessages()`
 - **Built-in fetch adapter request shaping** (`src/routes/index.tsx`) -- uses `fetchServerSentEvents(..., { buildRequestBody })` to send only `{ conversationId, event }` instead of the full history
+- **Typed client tool definitions** (`src/shared/tools.ts`) -- the browser imports shared tool definitions, so projected `part.input` and `part.output` types flow through `useChat`
 - **3 example tools** (`src/shared/tools.ts`):
   - `execute_typescript` -- `clientInput` hides raw code, `clientOutput` hides internal result data
   - `lookup_user` -- `clientOutput` strips PII (email, SSN, internal score)
@@ -69,10 +71,17 @@ pnpm dev
 # Opens on http://localhost:3001
 ```
 
-If `OPENAI_API_KEY` is available, the example uses `openaiText('gpt-4o-mini')`.
-If it is not available, the route falls back to a small local adapter so the
-server-stateful flow, tool projection, and hydration path still work in local
-development.
+The example uses a deterministic local adapter by default so the server-stateful
+flow, tool projection, and hydration path are reproducible in local development.
+
+To opt into a real model, set both:
+
+```bash
+export OPENAI_API_KEY=...
+export TANSTACK_AI_STATEFUL_CHAT_USE_OPENAI=true
+```
+
+When both are present, the example uses `openaiText('gpt-4o-mini')`.
 
 ## What works
 

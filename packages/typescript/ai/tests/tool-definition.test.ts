@@ -308,6 +308,27 @@ describe('toolDefinition', () => {
     expect(tool.clientOutput).toBe(clientOutputFn)
   })
 
+  it('should support schema-based client projections on definitions', () => {
+    const clientInputSchema = z.object({
+      desc: z.string(),
+    })
+    const clientOutputSchema = z.object({
+      success: z.boolean(),
+    })
+
+    const tool = toolDefinition({
+      name: 'schemaFiltered',
+      description: 'A tool with schema projections',
+      inputSchema: z.object({ code: z.string(), desc: z.string() }),
+      outputSchema: z.object({ success: z.boolean(), data: z.string() }),
+      clientInput: clientInputSchema,
+      clientOutput: clientOutputSchema,
+    })
+
+    expect(tool.clientInput).toBe(clientInputSchema)
+    expect(tool.clientOutput).toBe(clientOutputSchema)
+  })
+
   it('should propagate clientInput and clientOutput through .server()', () => {
     const clientInputFn = (_args: { code: string }) => ({})
     const clientOutputFn = (_result: { score: number }) => ({})
