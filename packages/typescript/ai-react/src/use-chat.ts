@@ -140,8 +140,8 @@ export function useChat<TTools extends ReadonlyArray<AnyClientTool> = any>(
   // remounting the component or changing the connection to recreate the client.
 
   const sendMessage = useCallback(
-    async (content: string | MultimodalContent) => {
-      await client.sendMessage(content)
+    async (content: string | MultimodalContent, body?: Record<string, any>) => {
+      await client.sendMessage(content, body)
     },
     [client],
   )

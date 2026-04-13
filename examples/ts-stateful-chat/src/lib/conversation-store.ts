@@ -10,6 +10,8 @@ interface ConversationData {
   updatedAt: string
 }
 
+const pendingWrites = new Map<string, Promise<void>>()
+
 export interface ConversationStore {
   load(
     id: string,
@@ -43,14 +45,25 @@ export const conversationStore: ConversationStore = {
   },
 
   async save(id, messages) {
-    await ensureDir()
-    const existing = await this.load(id)
-    const data: ConversationData = {
-      messages,
-      createdAt: existing?.createdAt ?? new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+    const previousWrite = pendingWrites.get(id) ?? Promise.resolve()
+    const nextWrite = previousWrite
+      .catch(() => {})
+      .then(async () => {
+        await ensureDir()
+        const existing = await this.load(id)
+        const data: ConversationData = {
+          messages,
+          createdAt: existing?.createdAt ?? new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        }
+        await writeFile(filePath(id), JSON.stringify(data, null, 2))
+      })
+
+    pendingWrites.set(id, nextWrite)
+    await nextWrite
+    if (pendingWrites.get(id) === nextWrite) {
+      pendingWrites.delete(id)
     }
-    await writeFile(filePath(id), JSON.stringify(data, null, 2))
   },
 
   async list() {

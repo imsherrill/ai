@@ -19,6 +19,10 @@ import {
   parseWithStandardSchema,
 } from './tools/schema-converter'
 import { maxIterations as maxIterationsStrategy } from './agent-loop-strategies'
+import {
+  buildToolLookup,
+  projectOutboundChunk,
+} from './client-projection'
 import { convertMessagesToModelMessages } from './messages'
 import { MiddlewareRunner } from './middleware/compose'
 import type {
@@ -237,8 +241,10 @@ class TextEngine<
   private params: TParams
   private systemPrompts: Array<string>
   private tools: Array<Tool>
+  private toolLookup: Map<string, Tool>
   private readonly loopStrategy: AgentLoopStrategy
   private toolCallManager: ToolCallManager
+  private readonly outboundToolCallNames = new Map<string, string>()
   private readonly lazyToolManager: LazyToolManager
   private readonly initialMessageCount: number
   private readonly requestId: string
@@ -300,6 +306,7 @@ class TextEngine<
       this.messages,
     )
     this.tools = this.lazyToolManager.getActiveTools()
+    this.toolLookup = buildToolLookup(this.tools)
     this.toolCallManager = new ToolCallManager(this.tools)
     this.requestId = this.createId('chat')
     this.streamId = this.createId('stream')
@@ -542,16 +549,8 @@ class TextEngine<
 
       this.totalChunkCount++
 
-      // Pipe chunk through middleware (devtools middleware observes and emits events)
-      const outputChunks = await this.middlewareRunner.runOnChunk(
-        this.middlewareCtx,
-        chunk,
-      )
-      for (const outputChunk of outputChunks) {
-        yield outputChunk
-        this.handleStreamChunk(outputChunk)
-        this.middlewareCtx.chunkIndex++
-      }
+      this.handleRawModelChunk(chunk)
+      yield* this.emitOutboundChunk(chunk, this.getRawArgsForChunk(chunk))
 
       // Handle usage via middleware
       if (chunk.type === 'RUN_FINISHED' && chunk.usage) {
@@ -595,6 +594,60 @@ class TextEngine<
         // - no special handling needed in chat activity
         break
     }
+  }
+
+  private handleRawModelChunk(chunk: StreamChunk): void {
+    if (
+      chunk.type === 'TOOL_CALL_START' ||
+      chunk.type === 'TOOL_CALL_ARGS' ||
+      chunk.type === 'TOOL_CALL_END'
+    ) {
+      this.handleStreamChunk(chunk)
+    }
+  }
+
+  private handleOutboundChunk(chunk: StreamChunk): void {
+    if (
+      chunk.type === 'TEXT_MESSAGE_CONTENT' ||
+      chunk.type === 'RUN_FINISHED' ||
+      chunk.type === 'RUN_ERROR' ||
+      chunk.type === 'STEP_FINISHED'
+    ) {
+      this.handleStreamChunk(chunk)
+    }
+  }
+
+  private async *emitOutboundChunk(
+    chunk: StreamChunk,
+    rawArgsForCall?: string,
+  ): AsyncGenerator<StreamChunk> {
+    const projectedChunks = projectOutboundChunk(
+      chunk,
+      this.toolLookup,
+      this.outboundToolCallNames,
+      rawArgsForCall,
+    )
+
+    for (const projectedChunk of projectedChunks) {
+      const outputChunks = await this.middlewareRunner.runOnChunk(
+        this.middlewareCtx,
+        projectedChunk,
+      )
+
+      for (const outputChunk of outputChunks) {
+        yield outputChunk
+        this.handleOutboundChunk(outputChunk)
+        this.middlewareCtx.chunkIndex++
+      }
+    }
+  }
+
+  private getRawArgsForChunk(chunk: StreamChunk): string | undefined {
+    if (!('toolCallId' in chunk) || typeof chunk.toolCallId !== 'string') {
+      return undefined
+    }
+
+    return this.toolCallManager.getToolCallArguments(chunk.toolCallId)
   }
 
   // ===========================
@@ -671,11 +724,12 @@ class TextEngine<
     })
 
     if (undiscoveredLazyResults.length > 0) {
-      for (const chunk of this.buildToolResultChunks(
+      const errorChunks = this.buildToolResultChunks(
         undiscoveredLazyResults,
         finishEvent,
-      )) {
-        yield chunk
+      )
+      for (const chunk of errorChunks) {
+        yield* this.emitOutboundChunk(chunk, this.getRawArgsForChunk(chunk))
       }
     }
 
@@ -715,7 +769,10 @@ class TextEngine<
     )
 
     // Consume the async generator, yielding custom events and collecting the return value
-    const executionResult = yield* this.drainToolCallGenerator(generator)
+    const executionResult = await this.drainToolCallGenerator(generator)
+    for (const chunk of executionResult.chunks) {
+      yield* this.emitOutboundChunk(chunk)
+    }
 
     // Check if middleware aborted during pending tool execution
     if (this.isMiddlewareAborted()) {
@@ -743,12 +800,13 @@ class TextEngine<
       executionResult.needsClientExecution.length > 0
     ) {
       if (executionResult.results.length > 0) {
-        for (const chunk of this.buildToolResultChunks(
+        const resultChunks = this.buildToolResultChunks(
           executionResult.results,
           finishEvent,
           argsMap,
-        )) {
-          yield chunk
+        )
+        for (const chunk of resultChunks) {
+          yield* this.emitOutboundChunk(chunk, this.getRawArgsForChunk(chunk))
         }
       }
 
@@ -756,14 +814,14 @@ class TextEngine<
         executionResult.needsApproval,
         finishEvent,
       )) {
-        yield chunk
+        yield* this.emitOutboundChunk(chunk)
       }
 
       for (const chunk of this.buildClientToolChunks(
         executionResult.needsClientExecution,
         finishEvent,
       )) {
-        yield chunk
+        yield* this.emitOutboundChunk(chunk)
       }
 
       this.setToolPhase('wait')
@@ -777,7 +835,7 @@ class TextEngine<
     )
 
     for (const chunk of toolResultChunks) {
-      yield chunk
+      yield* this.emitOutboundChunk(chunk, this.getRawArgsForChunk(chunk))
     }
 
     return 'continue'
@@ -868,7 +926,10 @@ class TextEngine<
     )
 
     // Consume the async generator, yielding custom events and collecting the return value
-    const executionResult = yield* this.drainToolCallGenerator(generator)
+    const executionResult = await this.drainToolCallGenerator(generator)
+    for (const chunk of executionResult.chunks) {
+      yield* this.emitOutboundChunk(chunk)
+    }
 
     this.middlewareCtx.phase = 'afterTools'
 
@@ -890,12 +951,19 @@ class TextEngine<
       executionResult.needsApproval.length > 0 ||
       executionResult.needsClientExecution.length > 0
     ) {
+      const argsMap = new Map<string, string>()
+      for (const toolCall of toolCalls) {
+        argsMap.set(toolCall.id, toolCall.function.arguments)
+      }
+
       if (executionResult.results.length > 0) {
-        for (const chunk of this.buildToolResultChunks(
+        const resultChunks = this.buildToolResultChunks(
           executionResult.results,
           finishEvent,
-        )) {
-          yield chunk
+          argsMap,
+        )
+        for (const chunk of resultChunks) {
+          yield* this.emitOutboundChunk(chunk, this.getRawArgsForChunk(chunk))
         }
       }
 
@@ -903,32 +971,39 @@ class TextEngine<
         executionResult.needsApproval,
         finishEvent,
       )) {
-        yield chunk
+        yield* this.emitOutboundChunk(chunk)
       }
 
       for (const chunk of this.buildClientToolChunks(
         executionResult.needsClientExecution,
         finishEvent,
       )) {
-        yield chunk
+        yield* this.emitOutboundChunk(chunk)
       }
 
       this.setToolPhase('wait')
       return
     }
 
+    const argsMap = new Map<string, string>()
+    for (const toolCall of toolCalls) {
+      argsMap.set(toolCall.id, toolCall.function.arguments)
+    }
+
     const toolResultChunks = this.buildToolResultChunks(
       executionResult.results,
       finishEvent,
+      argsMap,
     )
 
     for (const chunk of toolResultChunks) {
-      yield chunk
+      yield* this.emitOutboundChunk(chunk, this.getRawArgsForChunk(chunk))
     }
 
     // Refresh tools if lazy tools were discovered in this batch
     if (this.lazyToolManager.hasNewlyDiscoveredTools()) {
       this.tools = this.lazyToolManager.getActiveTools()
+      this.toolLookup = buildToolLookup(this.tools)
       this.toolCallManager = new ToolCallManager(this.tools)
       this.setToolPhase('continue')
       return
@@ -1118,6 +1193,37 @@ class TextEngine<
         })
       }
 
+      if (argsMap) {
+        try {
+          const args = argsMap.get(result.toolCallId)
+          if (args) {
+            const parsed = JSON.parse(args)
+            if (parsed !== undefined) {
+              chunks.push({
+                type: 'TOOL_CALL_END',
+                timestamp: Date.now(),
+                model: finishEvent.model,
+                toolCallId: result.toolCallId,
+                toolName: result.toolName,
+                input: parsed,
+                result: content,
+              })
+              this.messages = [
+                ...this.messages,
+                {
+                  role: 'tool',
+                  content,
+                  toolCallId: result.toolCallId,
+                },
+              ]
+              continue
+            }
+          }
+        } catch {
+          // Preserve existing chunk shape when historical args are malformed.
+        }
+      }
+
       chunks.push({
         type: 'TOOL_CALL_END',
         timestamp: Date.now(),
@@ -1260,7 +1366,7 @@ class TextEngine<
    * Drain an executeToolCalls async generator, yielding any CustomEvent chunks
    * and returning the final ExecuteToolCallsResult.
    */
-  private async *drainToolCallGenerator(
+  private async drainToolCallGenerator(
     generator: AsyncGenerator<
       CustomEvent,
       {
@@ -1270,21 +1376,22 @@ class TextEngine<
       },
       void
     >,
-  ): AsyncGenerator<
-    StreamChunk,
-    {
-      results: Array<ToolResult>
-      needsApproval: Array<ApprovalRequest>
-      needsClientExecution: Array<ClientToolRequest>
-    },
-    void
-  > {
+  ): Promise<{
+    chunks: Array<StreamChunk>
+    results: Array<ToolResult>
+    needsApproval: Array<ApprovalRequest>
+    needsClientExecution: Array<ClientToolRequest>
+  }> {
+    const chunks: Array<StreamChunk> = []
     let next = await generator.next()
     while (!next.done) {
-      yield next.value
+      chunks.push(next.value)
       next = await generator.next()
     }
-    return next.value
+    return {
+      chunks,
+      ...next.value,
+    }
   }
 
   private createCustomEventChunk(

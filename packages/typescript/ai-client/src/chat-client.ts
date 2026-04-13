@@ -582,7 +582,10 @@ export class ChatClient {
       const mergedBody = {
         ...this.body,
         ...this.pendingMessageBody,
-        conversationId: this.uniqueId,
+        conversationId:
+          this.pendingMessageBody?.conversationId ??
+          this.body?.conversationId ??
+          this.uniqueId,
       }
 
       // Clear the pending message body after use
