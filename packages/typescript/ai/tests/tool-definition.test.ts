@@ -286,4 +286,98 @@ describe('toolDefinition', () => {
     expect(tool.__toolSide).toBe('definition')
     expect(tool.inputSchema).toBeDefined()
   })
+
+  it('should preserve clientInput and clientOutput on definition', () => {
+    const clientInputFn = (args: { code: string; desc: string }) => ({
+      desc: args.desc,
+    })
+    const clientOutputFn = (result: { success: boolean; data: string }) => ({
+      success: result.success,
+    })
+
+    const tool = toolDefinition({
+      name: 'filteredTool',
+      description: 'A tool with client filters',
+      inputSchema: z.object({ code: z.string(), desc: z.string() }),
+      outputSchema: z.object({ success: z.boolean(), data: z.string() }),
+      clientInput: clientInputFn,
+      clientOutput: clientOutputFn,
+    })
+
+    expect(tool.clientInput).toBe(clientInputFn)
+    expect(tool.clientOutput).toBe(clientOutputFn)
+  })
+
+  it('should support schema-based client projections on definitions', () => {
+    const clientInputSchema = z.object({
+      desc: z.string(),
+    })
+    const clientOutputSchema = z.object({
+      success: z.boolean(),
+    })
+
+    const tool = toolDefinition({
+      name: 'schemaFiltered',
+      description: 'A tool with schema projections',
+      inputSchema: z.object({ code: z.string(), desc: z.string() }),
+      outputSchema: z.object({ success: z.boolean(), data: z.string() }),
+      clientInput: clientInputSchema,
+      clientOutput: clientOutputSchema,
+    })
+
+    expect(tool.clientInput).toBe(clientInputSchema)
+    expect(tool.clientOutput).toBe(clientOutputSchema)
+  })
+
+  it('should propagate clientInput and clientOutput through .server()', () => {
+    const clientInputFn = (_args: { code: string }) => ({})
+    const clientOutputFn = (_result: { score: number }) => ({})
+
+    const tool = toolDefinition({
+      name: 'serverFiltered',
+      description: 'Server tool with filters',
+      inputSchema: z.object({ code: z.string() }),
+      outputSchema: z.object({ score: z.number() }),
+      clientInput: clientInputFn,
+      clientOutput: clientOutputFn,
+    })
+
+    const serverTool = tool.server(async () => ({ score: 42 }))
+
+    expect(serverTool.clientInput).toBe(clientInputFn)
+    expect(serverTool.clientOutput).toBe(clientOutputFn)
+  })
+
+  it('should propagate clientInput and clientOutput through .client()', () => {
+    const clientInputFn = (_args: { code: string }) => ({})
+    const clientOutputFn = (_result: { score: number }) => ({})
+
+    const tool = toolDefinition({
+      name: 'clientFiltered',
+      description: 'Client tool with filters',
+      inputSchema: z.object({ code: z.string() }),
+      outputSchema: z.object({ score: z.number() }),
+      clientInput: clientInputFn,
+      clientOutput: clientOutputFn,
+    })
+
+    const clientTool = tool.client()
+
+    expect(clientTool.clientInput).toBe(clientInputFn)
+    expect(clientTool.clientOutput).toBe(clientOutputFn)
+  })
+
+  it('should default clientInput and clientOutput to undefined', () => {
+    const tool = toolDefinition({
+      name: 'noFilters',
+      description: 'No filters',
+    })
+
+    expect(tool.clientInput).toBeUndefined()
+    expect(tool.clientOutput).toBeUndefined()
+
+    const serverTool = tool.server(async () => ({}))
+    expect(serverTool.clientInput).toBeUndefined()
+    expect(serverTool.clientOutput).toBeUndefined()
+  })
 })

@@ -1640,6 +1640,27 @@ describe('ChatClient', () => {
       expect(capturedData?.conversationId).toBe('my-conversation')
     })
 
+    it('should preserve an explicit conversationId from the request body', async () => {
+      const chunks = createTextChunks('Response')
+      let capturedData: Record<string, any> | undefined
+      const adapter = createMockConnectionAdapter({
+        chunks,
+        onConnect: (_messages, data) => {
+          capturedData = data
+        },
+      })
+
+      const client = new ChatClient({
+        connection: adapter,
+        id: 'internal-conversation',
+        body: { conversationId: 'external-conversation' },
+      })
+
+      await client.sendMessage('Hello')
+
+      expect(capturedData?.conversationId).toBe('external-conversation')
+    })
+
     it('should clear per-message body after request', async () => {
       const chunks = createTextChunks('Response')
       let capturedData: Record<string, any> | undefined

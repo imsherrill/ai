@@ -222,6 +222,10 @@ export interface FetchConnectionOptions {
   credentials?: RequestCredentials
   signal?: AbortSignal
   body?: Record<string, any>
+  buildRequestBody?: (ctx: {
+    messages: Array<UIMessage> | Array<ModelMessage>
+    data?: Record<string, any>
+  }) => unknown
   fetchClient?: typeof globalThis.fetch
 }
 
@@ -277,13 +281,13 @@ export function fetchServerSentEvents(
         ...mergeHeaders(resolvedOptions.headers),
       }
 
-      // Send messages as-is (UIMessages with parts preserved)
-      // Server-side TextEngine handles conversion to ModelMessages
-      const requestBody = {
-        messages,
-        data,
-        ...resolvedOptions.body,
-      }
+      const requestBody = resolvedOptions.buildRequestBody
+        ? resolvedOptions.buildRequestBody({ messages, data })
+        : {
+            messages,
+            data,
+            ...resolvedOptions.body,
+          }
 
       const fetchClient = resolvedOptions.fetchClient ?? fetch
       const response = await fetchClient(resolvedUrl, {
@@ -376,13 +380,13 @@ export function fetchHttpStream(
         ...mergeHeaders(resolvedOptions.headers),
       }
 
-      // Send messages as-is (UIMessages with parts preserved)
-      // Server-side TextEngine handles conversion to ModelMessages
-      const requestBody = {
-        messages,
-        data,
-        ...resolvedOptions.body,
-      }
+      const requestBody = resolvedOptions.buildRequestBody
+        ? resolvedOptions.buildRequestBody({ messages, data })
+        : {
+            messages,
+            data,
+            ...resolvedOptions.body,
+          }
 
       const fetchClient = resolvedOptions.fetchClient ?? fetch
       const response = await fetchClient(resolvedUrl, {

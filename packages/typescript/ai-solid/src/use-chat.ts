@@ -127,8 +127,11 @@ export function useChat<TTools extends ReadonlyArray<AnyClientTool> = any>(
   // are captured at client creation time. Changes to these callbacks require
   // remounting the component or changing the connection to recreate the client.
 
-  const sendMessage = async (content: string | MultimodalContent) => {
-    await client().sendMessage(content)
+  const sendMessage = async (
+    content: string | MultimodalContent,
+    body?: Record<string, any>,
+  ) => {
+    await client().sendMessage(content, body)
   }
 
   const append = async (message: ModelMessage | UIMessage<TTools>) => {

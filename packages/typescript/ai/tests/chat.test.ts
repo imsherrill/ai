@@ -730,6 +730,96 @@ describe('chat()', () => {
       expect(argsIdx).toBeLessThan(endIdx)
     })
 
+    it('should project pending tool replay chunks while keeping the full server transcript', async () => {
+      const executeSpy = vi.fn().mockReturnValue({
+        success: true,
+        logs: ['internal-only'],
+        internalResult: { total: 42 },
+      })
+
+      const { adapter, calls } = createMockAdapter({
+        iterations: [
+          [
+            ev.runStarted(),
+            ev.textStart(),
+            ev.textContent('Total is 42.'),
+            ev.textEnd(),
+            ev.runFinished('stop'),
+          ],
+        ],
+      })
+
+      const stream = chat({
+        adapter,
+        messages: [
+          { role: 'user', content: 'Run the aggregation job' },
+          {
+            role: 'assistant',
+            content: '',
+            toolCalls: [
+              {
+                id: 'call_1',
+                type: 'function' as const,
+                function: {
+                  name: 'execute_typescript',
+                  arguments: JSON.stringify({
+                    typescriptCode: 'const total = confidentialOrders.reduce(...)',
+                    description: 'Aggregate confidential order totals',
+                  }),
+                },
+              },
+            ],
+          },
+        ],
+        tools: [
+          {
+            name: 'execute_typescript',
+            description: 'Execute TypeScript on the server',
+            clientInput: (args: any) => ({ description: args.description }),
+            clientOutput: (result: any) => ({ success: result.success }),
+            execute: executeSpy,
+          },
+        ],
+      })
+
+      const chunks = await collectChunks(stream as AsyncIterable<StreamChunk>)
+
+      expect(executeSpy).toHaveBeenCalledWith(
+        {
+          typescriptCode: 'const total = confidentialOrders.reduce(...)',
+          description: 'Aggregate confidential order totals',
+        },
+        expect.objectContaining({ toolCallId: 'call_1' }),
+      )
+
+      const toolArgsChunks = chunks.filter(
+        (c) =>
+          c.type === 'TOOL_CALL_ARGS' && (c as any).toolCallId === 'call_1',
+      )
+      expect(toolArgsChunks).toHaveLength(0)
+
+      const toolEndChunk = chunks.find(
+        (c) =>
+          c.type === 'TOOL_CALL_END' && (c as any).toolCallId === 'call_1',
+      ) as Extract<StreamChunk, { type: 'TOOL_CALL_END' }>
+
+      expect(toolEndChunk.input).toEqual({
+        description: 'Aggregate confidential order totals',
+      })
+      expect(toolEndChunk.result).toBe(JSON.stringify({ success: true }))
+
+      expect(calls).toHaveLength(1)
+      const toolResultMessage = (calls[0]!.messages as Array<any>).find(
+        (message) => message.role === 'tool',
+      )
+      expect(toolResultMessage).toBeDefined()
+      expect(JSON.parse(toolResultMessage.content)).toEqual({
+        success: true,
+        logs: ['internal-only'],
+        internalResult: { total: 42 },
+      })
+    })
+
     it('should emit TOOL_CALL_START and TOOL_CALL_ARGS for each pending tool call in a batch', async () => {
       const weatherSpy = vi.fn().mockReturnValue({ temp: 72 })
       const timeSpy = vi.fn().mockReturnValue({ time: '3pm' })

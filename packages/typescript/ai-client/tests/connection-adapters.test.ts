@@ -321,6 +321,49 @@ describe('connection-adapters', () => {
       expect(body.data).toEqual({ key: 'value' })
     })
 
+    it('should allow request body customization', async () => {
+      const mockReader = {
+        read: vi.fn().mockResolvedValue({ done: true, value: undefined }),
+        releaseLock: vi.fn(),
+      }
+
+      const mockResponse = {
+        ok: true,
+        body: {
+          getReader: () => mockReader,
+        },
+      }
+
+      fetchMock.mockResolvedValue(mockResponse as any)
+
+      const adapter = fetchServerSentEvents('/api/chat', {
+        buildRequestBody: ({ messages, data }) => ({
+          conversationId: data?.conversationId,
+          event: {
+            type: 'user-message',
+            message: messages[messages.length - 1],
+          },
+        }),
+      })
+
+      for await (const _ of adapter.connect(
+        [{ role: 'user', content: 'Hello' }],
+        { conversationId: 'chat-123' },
+      )) {
+        // Consume
+      }
+
+      const call = fetchMock.mock.calls[0]
+      const body = JSON.parse(call?.[1]?.body as string)
+      expect(body).toEqual({
+        conversationId: 'chat-123',
+        event: {
+          type: 'user-message',
+          message: { role: 'user', content: 'Hello' },
+        },
+      })
+    })
+
     it('should use custom fetchClient when provided', async () => {
       const customFetch = vi.fn()
       const mockReader = {
@@ -702,6 +745,49 @@ describe('connection-adapters', () => {
       const call = fetchMock.mock.calls[0]
       const body = JSON.parse(call?.[1]?.body as string)
       expect(body.data).toEqual({ key: 'value' })
+    })
+
+    it('should allow request body customization', async () => {
+      const mockReader = {
+        read: vi.fn().mockResolvedValue({ done: true, value: undefined }),
+        releaseLock: vi.fn(),
+      }
+
+      const mockResponse = {
+        ok: true,
+        body: {
+          getReader: () => mockReader,
+        },
+      }
+
+      fetchMock.mockResolvedValue(mockResponse as any)
+
+      const adapter = fetchHttpStream('/api/chat', {
+        buildRequestBody: ({ messages, data }) => ({
+          conversationId: data?.conversationId,
+          event: {
+            type: 'user-message',
+            message: messages[messages.length - 1],
+          },
+        }),
+      })
+
+      for await (const _ of adapter.connect(
+        [{ role: 'user', content: 'Hello' }],
+        { conversationId: 'chat-123' },
+      )) {
+        // Consume
+      }
+
+      const call = fetchMock.mock.calls[0]
+      const body = JSON.parse(call?.[1]?.body as string)
+      expect(body).toEqual({
+        conversationId: 'chat-123',
+        event: {
+          type: 'user-message',
+          message: { role: 'user', content: 'Hello' },
+        },
+      })
     })
 
     it('should resolve dynamic URL from function', async () => {

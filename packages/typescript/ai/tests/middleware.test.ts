@@ -481,6 +481,99 @@ describe('chat() middleware', () => {
       expect(onAfterToolCall.mock.calls[0]![1].ok).toBe(true)
     })
 
+    it('should expose projected chunks to onChunk while keeping raw tool data in server hooks', async () => {
+      const observedChunks: Array<StreamChunk> = []
+      const afterToolInfo: Array<{ result?: unknown }> = []
+      const finishSnapshots: Array<Array<{ role: string; content: unknown }>> = []
+
+      const tool = {
+        name: 'execute_typescript',
+        description: 'Execute TypeScript on the server',
+        clientInput: (args: any) => ({ description: args.description }),
+        clientOutput: (result: any) => ({ success: result.success }),
+        execute: () => ({
+          success: true,
+          logs: ['internal only'],
+          internalResult: { total: 42 },
+        }),
+      }
+
+      const { adapter } = createMockAdapter({
+        iterations: [
+          [
+            ev.runStarted(),
+            ev.toolStart('tc-1', 'execute_typescript'),
+            ev.toolArgs(
+              'tc-1',
+              '{"typescriptCode":"const total = secret()","description":"Aggregate totals"}',
+            ),
+            ev.runFinished('tool_calls'),
+          ],
+          [ev.runStarted(), ev.textContent('done'), ev.runFinished('stop')],
+        ],
+      })
+
+      const middleware: ChatMiddleware = {
+        name: 'test',
+        onChunk: (_ctx, chunk) => {
+          observedChunks.push(chunk)
+        },
+        onAfterToolCall: (_ctx, info) => {
+          afterToolInfo.push({ result: info.result })
+        },
+        onFinish: (ctx) => {
+          finishSnapshots.push(
+            ctx.messages.map((message) => ({
+              role: message.role,
+              content: 'content' in message ? message.content : null,
+            })),
+          )
+        },
+      }
+
+      const stream = chat({
+        adapter,
+        messages: [{ role: 'user', content: 'Run the job' }],
+        tools: [tool],
+        middleware: [middleware],
+      })
+
+      await collectChunks(stream as AsyncIterable<StreamChunk>)
+
+      const projectedToolArgs = observedChunks.filter(
+        (chunk) =>
+          chunk.type === 'TOOL_CALL_ARGS' && chunk.toolCallId === 'tc-1',
+      )
+      expect(projectedToolArgs).toHaveLength(0)
+
+      const toolEndChunk = observedChunks.find(
+        (chunk) =>
+          chunk.type === 'TOOL_CALL_END' && chunk.toolCallId === 'tc-1',
+      ) as Extract<StreamChunk, { type: 'TOOL_CALL_END' }>
+      expect(toolEndChunk.input).toEqual({ description: 'Aggregate totals' })
+      expect(toolEndChunk.result).toBe(JSON.stringify({ success: true }))
+
+      expect(afterToolInfo).toEqual([
+        {
+          result: {
+            success: true,
+            logs: ['internal only'],
+            internalResult: { total: 42 },
+          },
+        },
+      ])
+
+      const toolMessage = finishSnapshots[0]!.find(
+        (message) => message.role === 'tool',
+      )
+      expect(toolMessage).toBeDefined()
+      expect(JSON.parse(toolMessage!.content as string)).toEqual({
+        success: true,
+        logs: ['internal only'],
+        internalResult: { total: 42 },
+      })
+    })
+
     it('should support transformArgs decision', async () => {
       const executeFn = vi.fn(() => ({ result: 'done' }))
       const tool = serverTool('myTool', executeFn)
@@ -1348,6 +1441,9 @@ describe('chat() middleware', () => {
         // Tool execution phase
         'onBeforeToolCall:myTool',
         'onAfterToolCall:myTool:true',
+        'onChunk:TOOL_CALL_START',
+        'onChunk:TOOL_CALL_ARGS',
+        'onChunk:TOOL_CALL_END',
         // Second model call (beforeModel phase)
         'onConfig:beforeModel',
         'onChunk:RUN_STARTED',
@@ -1418,11 +1514,23 @@ describe('chat() middleware', () => {
         .map((e) => e.phase)
       expect(configPhases).toEqual(['init', 'beforeModel', 'beforeModel'])
 
-      // onChunk should be in 'modelStream' phase
+      // onChunk should reflect both model output and post-tool outbound chunks
       const chunkPhases = phaseLog
         .filter((e) => e.hook === 'onChunk')
         .map((e) => e.phase)
-      expect(chunkPhases.every((p) => p === 'modelStream')).toBe(true)
+      expect(chunkPhases).toEqual([
+        'modelStream',
+        'modelStream',
+        'modelStream',
+        'modelStream',
+        'modelStream',
+        'afterTools',
+        'afterTools',
+        'afterTools',
+        'modelStream',
+        'modelStream',
+        'modelStream',
+      ])
 
       // onBeforeToolCall should be in 'beforeTools' phase
       const beforeToolPhases = phaseLog

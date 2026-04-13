@@ -150,6 +150,15 @@ export class ToolCallManager {
     )
   }
 
+  getToolCallArguments(toolCallId: string): string | undefined {
+    for (const [, toolCall] of this.toolCallsMap.entries()) {
+      if (toolCall.id === toolCallId) {
+        return toolCall.function.arguments
+      }
+    }
+    return undefined
+  }
+
   /**
    * Execute all tool calls and return tool result messages
    * Yields TOOL_CALL_END events for streaming

@@ -46,6 +46,8 @@ export {
   type InferToolName,
   type InferToolInput,
   type InferToolOutput,
+  type InferToolClientInput,
+  type InferToolClientOutput,
 } from './activities/chat/tools/tool-definition'
 
 // Schema conversion (Standard JSON Schema compliant)
@@ -133,6 +135,8 @@ export {
   modelMessageToUIMessage,
   modelMessagesToUIMessages,
   normalizeToUIMessage,
+  toClientMessages,
+  toClientUIMessages,
 } from './activities/chat/messages'
 
 // Stream processing (unified for server and client)
