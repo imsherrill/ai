@@ -26,6 +26,7 @@ import type {
   URLPDFSource,
 } from '@anthropic-ai/sdk/resources/messages'
 import type Anthropic_SDK from '@anthropic-ai/sdk'
+import type { AnthropicBeta } from '@anthropic-ai/sdk/resources/beta/beta'
 import type {
   ContentPart,
   Modality,
@@ -121,8 +122,22 @@ export class AnthropicTextAdapter<
     try {
       const requestParams = this.mapCommonOptionsToAnthropic(options)
 
+      // Interleaved thinking is only supported on the beta messages endpoint,
+      // so the `betas` flag is attached here rather than in the shared mapper
+      // (structuredOutput uses the non-beta endpoint which rejects `betas`).
+      const modelOptions = options.modelOptions as
+        | InternalTextProviderOptions
+        | undefined
+      const useInterleavedThinking =
+        modelOptions?.thinking?.type === 'enabled' &&
+        typeof modelOptions.thinking.budget_tokens === 'number' &&
+        modelOptions.thinking.budget_tokens > 0
+      const betas: Array<AnthropicBeta> | undefined = useInterleavedThinking
+        ? ['interleaved-thinking-2025-05-14']
+        : undefined
+
       const stream = await this.client.beta.messages.create(
-        { ...requestParams, stream: true },
+        { ...requestParams, stream: true, ...(betas && { betas }) },
         {
           signal: options.request?.signal,
           headers: options.request?.headers,
@@ -289,9 +304,6 @@ export class AnthropicTextAdapter<
       system: options.systemPrompts?.join('\n'),
       tools: tools,
       ...validProviderOptions,
-      ...(thinkingBudget && {
-        betas: ['interleaved-thinking-2025-05-14'] as any,
-      }),
     }
     validateTextProviderOptions(requestParams)
     return requestParams
