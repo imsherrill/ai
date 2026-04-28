@@ -547,7 +547,9 @@ export class StreamProcessor {
         break
 
       case 'STEP_STARTED':
-        this.handleStepStartedEvent(chunk)
+        this.handleStepStartedEvent(
+          chunk as Extract<StreamChunk, { type: 'STEP_STARTED' }>,
+        )
         break
 
       default:
@@ -1302,6 +1304,15 @@ export class StreamProcessor {
     )
 
     state.hasSeenReasoningEvents = true
+    if (this.pendingThinkingStepId) {
+      state.currentThinkingStepId = this.pendingThinkingStepId
+      if (!state.thinkingSteps.has(this.pendingThinkingStepId)) {
+        state.thinkingSteps.set(this.pendingThinkingStepId, '')
+        state.thinkingStepOrder.push(this.pendingThinkingStepId)
+      }
+      this.pendingThinkingStepId = null
+    }
+
     const stepId = state.currentThinkingStepId ?? chunk.messageId
     if (!state.thinkingSteps.has(stepId)) {
       state.thinkingSteps.set(stepId, '')
