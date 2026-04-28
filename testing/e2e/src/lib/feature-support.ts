@@ -1,6 +1,13 @@
 import type { Provider, Feature } from '@/lib/types'
 
-const matrix: Record<Feature, Set<Provider>> = {
+/**
+ * Single source of truth for provider × feature support.
+ *
+ * This matrix is imported by `tests/test-matrix.ts` (Playwright specs) and
+ * by the dev routes under `src/routes/` to decide which provider/feature
+ * combinations to render and test. Update this file only — do not fork.
+ */
+export const matrix: Record<Feature, Set<Provider>> = {
   chat: new Set([
     'openai',
     'anthropic',
@@ -112,34 +119,11 @@ const matrix: Record<Feature, Set<Provider>> = {
     'grok',
     'openrouter',
   ]),
-  // Routed through chat — all providers with chat support work
-  'image-gen': new Set([
-    'openai',
-    'anthropic',
-    'gemini',
-    'ollama',
-    'groq',
-    'grok',
-    'openrouter',
-  ]),
-  tts: new Set([
-    'openai',
-    'anthropic',
-    'gemini',
-    'ollama',
-    'groq',
-    'grok',
-    'openrouter',
-  ]),
-  transcription: new Set([
-    'openai',
-    'anthropic',
-    'gemini',
-    'ollama',
-    'groq',
-    'grok',
-    'openrouter',
-  ]),
+  // Gemini excluded: aimock doesn't mock Gemini's Imagen predict endpoint format
+  'image-gen': new Set(['openai', 'grok']),
+  tts: new Set(['openai', 'grok']),
+  transcription: new Set(['openai', 'grok']),
+  'video-gen': new Set(['openai']),
 }
 
 export function isSupported(provider: Provider, feature: Feature): boolean {
