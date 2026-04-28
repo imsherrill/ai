@@ -777,15 +777,16 @@ export class AnthropicTextAdapter<
           if (currentBlockType === 'thinking') {
             // Emit signature so it can be replayed in multi-turn context
             if (accumulatedSignature && stepId) {
-              yield {
+              yield asChunk({
                 type: 'STEP_FINISHED',
+                stepName: stepId,
                 stepId,
                 model,
                 timestamp,
                 delta: '',
                 content: accumulatedThinking,
                 signature: accumulatedSignature,
-              }
+              })
             }
           } else if (currentBlockType === 'tool_use') {
             const existing = toolCallsMap.get(currentToolIndex)
