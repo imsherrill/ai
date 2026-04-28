@@ -60,6 +60,7 @@ export interface MessageStreamState {
   thinkingStepSignatures: Map<string, string>
   thinkingStepOrder: Array<string>
   currentThinkingStepId: string | null
+  hasSeenReasoningEvents: boolean
   toolCalls: Map<string, InternalToolCallState>
   toolCallOrder: Array<string>
   hasToolCallsSinceTextStart: boolean
