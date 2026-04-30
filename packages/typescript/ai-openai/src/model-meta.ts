@@ -1726,6 +1726,71 @@ const GPT_5_4_NANO = {
     OpenAIMetadataOptions
 >
 
+const GPT_5_4_IMAGE_2 = {
+  name: 'gpt-5.4-image-2',
+  context_window: 272_000,
+  max_output_tokens: 128_000,
+  supports: {
+    input: ['image', 'text'],
+    output: ['text'],
+    endpoints: ['chat', 'chat-completions'],
+    features: ['streaming', 'function_calling', 'structured_outputs', 'distillation'],
+    tools: ['web_search', 'file_search', 'image_generation', 'code_interpreter', 'mcp'],
+  },
+  pricing: {
+    input: {
+      normal: 8,
+      cached: 2,
+    },
+    output: {
+      normal: 15,
+    },
+  },
+} as const satisfies ModelMeta<OpenAIBaseOptions & OpenAIReasoningOptions & OpenAIStructuredOutputOptions & OpenAIToolsOptions & OpenAIStreamingOptions & OpenAIMetadataOptions>
+
+const GPT_5_5 = {
+  name: 'gpt-5.5',
+  context_window: 1_050_000,
+  max_output_tokens: 128_000,
+  supports: {
+    input: ['image', 'text'],
+    output: ['text'],
+    endpoints: ['chat', 'chat-completions'],
+    features: ['streaming', 'function_calling', 'structured_outputs', 'distillation'],
+    tools: ['web_search', 'file_search', 'image_generation', 'code_interpreter', 'mcp'],
+  },
+  pricing: {
+    input: {
+      normal: 5,
+      cached: 0.5,
+    },
+    output: {
+      normal: 30,
+    },
+  },
+} as const satisfies ModelMeta<OpenAIBaseOptions & OpenAIReasoningOptions & OpenAIStructuredOutputOptions & OpenAIToolsOptions & OpenAIStreamingOptions & OpenAIMetadataOptions>
+
+const GPT_5_5_PRO = {
+  name: 'gpt-5.5-pro',
+  context_window: 1_050_000,
+  max_output_tokens: 128_000,
+  supports: {
+    input: ['image', 'text'],
+    output: ['text'],
+    endpoints: ['chat', 'chat-completions'],
+    features: ['streaming', 'function_calling', 'structured_outputs', 'distillation'],
+    tools: ['web_search', 'file_search', 'image_generation', 'code_interpreter', 'mcp'],
+  },
+  pricing: {
+    input: {
+      normal: 30,
+    },
+    output: {
+      normal: 180,
+    },
+  },
+} as const satisfies ModelMeta<OpenAIBaseOptions & OpenAIReasoningOptions & OpenAIStructuredOutputOptions & OpenAIToolsOptions & OpenAIStreamingOptions & OpenAIMetadataOptions>
+
 export const OPENAI_CHAT_MODELS = [
   // Frontier models
   GPT5_2.name,
@@ -1777,6 +1842,10 @@ export const OPENAI_CHAT_MODELS = [
 
   GPT_5_4_MINI.name,
   GPT_5_4_NANO.name,
+
+  GPT_5_4_IMAGE_2.name,
+  GPT_5_5.name,
+  GPT_5_5_PRO.name,
 ] as const
 
 export type OpenAIChatModel = (typeof OPENAI_CHAT_MODELS)[number]
@@ -2042,6 +2111,9 @@ export type OpenAIChatModelProviderOptionsByName = {
     OpenAIToolsOptions &
     OpenAIStreamingOptions &
     OpenAIMetadataOptions
+  [GPT_5_4_IMAGE_2.name]: OpenAIBaseOptions & OpenAIReasoningOptions & OpenAIStructuredOutputOptions & OpenAIToolsOptions & OpenAIStreamingOptions & OpenAIMetadataOptions
+  [GPT_5_5.name]: OpenAIBaseOptions & OpenAIReasoningOptions & OpenAIStructuredOutputOptions & OpenAIToolsOptions & OpenAIStreamingOptions & OpenAIMetadataOptions
+  [GPT_5_5_PRO.name]: OpenAIBaseOptions & OpenAIReasoningOptions & OpenAIStructuredOutputOptions & OpenAIToolsOptions & OpenAIStreamingOptions & OpenAIMetadataOptions
 }
 
 /**
@@ -2099,4 +2171,7 @@ export type OpenAIModelInputModalitiesByName = {
   [GPT_4O_MINI_SEARCH_PREVIEW.name]: typeof GPT_4O_MINI_SEARCH_PREVIEW.supports.input
   [GPT_5_4_MINI.name]: typeof GPT_5_4_MINI.supports.input
   [GPT_5_4_NANO.name]: typeof GPT_5_4_NANO.supports.input
+  [GPT_5_4_IMAGE_2.name]: typeof GPT_5_4_IMAGE_2.supports.input
+  [GPT_5_5.name]: typeof GPT_5_5.supports.input
+  [GPT_5_5_PRO.name]: typeof GPT_5_5_PRO.supports.input
 }
