@@ -105,7 +105,7 @@ export interface ChatMiddlewareContext {
 export interface ChatMiddlewareConfig {
   messages: Array<ModelMessage>
   systemPrompts: Array<string>
-  tools: Array<Tool>
+  tools: ReadonlyArray<Tool>
   temperature?: number
   topP?: number
   maxTokens?: number

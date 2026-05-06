@@ -1,5 +1,52 @@
 # @tanstack/ai-elevenlabs
 
+## 0.2.0
+
+### Minor Changes
+
+- feat: add REST adapters to @tanstack/ai-elevenlabs and migrate realtime to the renamed SDK ([#504](https://github.com/TanStack/ai/pull/504))
+
+  Extends `@tanstack/ai-elevenlabs` (previously realtime-only) with three tree-shakeable REST adapters built on the official `@elevenlabs/elevenlabs-js` SDK (v2.44+):
+  - `elevenlabsSpeech()` — text-to-speech on `eleven_v3`, `eleven_multilingual_v2`, `eleven_flash_*`, `eleven_turbo_*`
+  - `elevenlabsAudio()` — music (`music_v1`, with structured composition plans) and sound effects (`eleven_text_to_sound_v2`/`v1`) via a single adapter that dispatches by model
+  - `elevenlabsTranscription()` — Scribe v1/v2 speech-to-text with diarization, keyterm biasing, PII redaction, and word-level timestamps
+
+  Also migrates the existing realtime adapter off the deprecated `@11labs/client` onto the renamed `@elevenlabs/client` package.
+
+## 0.1.8
+
+### Patch Changes
+
+- Updated dependencies [[`54523f5`](https://github.com/TanStack/ai/commit/54523f5e9a9b4d4ea6c49e4551936bc2cc25593a), [`54523f5`](https://github.com/TanStack/ai/commit/54523f5e9a9b4d4ea6c49e4551936bc2cc25593a), [`af9eb7b`](https://github.com/TanStack/ai/commit/af9eb7bbb875b23b7e99b2e6b743636daad402d1), [`008f015`](https://github.com/TanStack/ai/commit/008f0154f852e7e6734d3e3d35cad47780b52b7a), [`54523f5`](https://github.com/TanStack/ai/commit/54523f5e9a9b4d4ea6c49e4551936bc2cc25593a)]:
+  - @tanstack/ai@0.14.0
+  - @tanstack/ai-client@0.8.0
+
+## 0.1.7
+
+### Patch Changes
+
+- Wire each adapter's text, summarize, image, speech, transcription, and video paths through the new `InternalLogger` from `@tanstack/ai/adapter-internals`: `logger.request(...)` before each SDK call, `logger.provider(...)` for every chunk received, and `logger.errors(...)` in catch blocks. Migrates all pre-existing ad-hoc `console.*` calls in adapter catch blocks (including the OpenAI and ElevenLabs realtime adapters) onto the structured logger. No adapter factory or config-shape changes. ([#467](https://github.com/TanStack/ai/pull/467))
+
+- Updated dependencies [[`c1fd96f`](https://github.com/TanStack/ai/commit/c1fd96ffbcee1372ab039127903162bdf5543dd9)]:
+  - @tanstack/ai@0.13.0
+  - @tanstack/ai-client@0.7.14
+
+## 0.1.6
+
+### Patch Changes
+
+- Updated dependencies [[`e32583e`](https://github.com/TanStack/ai/commit/e32583e7612cede932baee6a79355e96e7124d90)]:
+  - @tanstack/ai@0.12.0
+  - @tanstack/ai-client@0.7.13
+
+## 0.1.5
+
+### Patch Changes
+
+- Updated dependencies [[`12d43e5`](https://github.com/TanStack/ai/commit/12d43e55073351a6a2b5b21861b8e28c657b92b7), [`12d43e5`](https://github.com/TanStack/ai/commit/12d43e55073351a6a2b5b21861b8e28c657b92b7), [`1d6f3be`](https://github.com/TanStack/ai/commit/1d6f3bef4fd1c4917823612fbcd9450a0fd2e627)]:
+  - @tanstack/ai@0.11.0
+  - @tanstack/ai-client@0.7.11
+
 ## 0.1.4
 
 ### Patch Changes

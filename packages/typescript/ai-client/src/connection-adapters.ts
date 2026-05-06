@@ -193,20 +193,22 @@ export function normalizeConnectionAdapter(
             model: 'connect-wrapper',
             timestamp: Date.now(),
             finishReason: 'stop',
-          })
+          } as unknown as StreamChunk)
         }
       } catch (err) {
         if (!abortSignal?.aborted && !hasTerminalEvent) {
           push({
             type: 'RUN_ERROR',
             timestamp: Date.now(),
+            message:
+              err instanceof Error ? err.message : 'Unknown error in connect()',
             error: {
               message:
                 err instanceof Error
                   ? err.message
                   : 'Unknown error in connect()',
             },
-          })
+          } as unknown as StreamChunk)
         }
         throw err
       }
@@ -222,6 +224,10 @@ export interface FetchConnectionOptions {
   credentials?: RequestCredentials
   signal?: AbortSignal
   body?: Record<string, any>
+  buildRequestBody?: (ctx: {
+    messages: Array<UIMessage> | Array<ModelMessage>
+    data?: Record<string, any>
+  }) => unknown
   fetchClient?: typeof globalThis.fetch
 }
 
@@ -277,13 +283,13 @@ export function fetchServerSentEvents(
         ...mergeHeaders(resolvedOptions.headers),
       }
 
-      // Send messages as-is (UIMessages with parts preserved)
-      // Server-side TextEngine handles conversion to ModelMessages
-      const requestBody = {
-        messages,
-        data,
-        ...resolvedOptions.body,
-      }
+      const requestBody = resolvedOptions.buildRequestBody
+        ? resolvedOptions.buildRequestBody({ messages, data })
+        : {
+            messages,
+            data,
+            ...resolvedOptions.body,
+          }
 
       const fetchClient = resolvedOptions.fetchClient ?? fetch
       const response = await fetchClient(resolvedUrl, {
@@ -310,7 +316,12 @@ export function fetchServerSentEvents(
         // Handle Server-Sent Events format
         const data = line.startsWith('data: ') ? line.slice(6) : line
 
-        if (data === '[DONE]') continue
+        if (data === '[DONE]') {
+          console.warn(
+            '[@tanstack/ai-client] Received [DONE] sentinel. This is deprecated — upgrade your @tanstack/ai server package. RUN_FINISHED is the stream terminator.',
+          )
+          continue
+        }
 
         try {
           const parsed: StreamChunk = JSON.parse(data)
@@ -376,13 +387,13 @@ export function fetchHttpStream(
         ...mergeHeaders(resolvedOptions.headers),
       }
 
-      // Send messages as-is (UIMessages with parts preserved)
-      // Server-side TextEngine handles conversion to ModelMessages
-      const requestBody = {
-        messages,
-        data,
-        ...resolvedOptions.body,
-      }
+      const requestBody = resolvedOptions.buildRequestBody
+        ? resolvedOptions.buildRequestBody({ messages, data })
+        : {
+            messages,
+            data,
+            ...resolvedOptions.body,
+          }
 
       const fetchClient = resolvedOptions.fetchClient ?? fetch
       const response = await fetchClient(resolvedUrl, {

@@ -3,9 +3,15 @@ import type {
   MessagePart,
   ModelMessage,
   TextPart,
+  Tool,
   ToolCallPart,
   UIMessage,
 } from '../../types'
+import {
+  buildToolLookup,
+  projectToClientMessages,
+  projectToClientUIMessages,
+} from './client-projection'
 // ===========================
 // Message Converters
 // ===========================
@@ -433,4 +439,45 @@ export function normalizeToUIMessage(
  */
 export function generateMessageId(): string {
   return `msg-${Date.now()}-${Math.random().toString(36).substring(7)}`
+}
+
+// ===========================
+// Client Message Filtering
+// ===========================
+
+/**
+ * Build a map from tool name to tool, and a helper to resolve
+ * the tool name for a given toolCallId from the preceding assistant message.
+ */
+/**
+ * Filter an array of ModelMessages, applying clientInput/clientOutput
+ * transforms from tool definitions. The result is suitable for sending
+ * to the client -- the LLM's full context is preserved server-side.
+ *
+ * @param messages - The full server-side ModelMessage array
+ * @param tools - Tool definitions with optional clientInput/clientOutput transforms
+ * @returns A new array of ModelMessages with filtered tool data
+ */
+export function toClientMessages(
+  messages: Array<ModelMessage>,
+  tools: ReadonlyArray<Tool>,
+): Array<ModelMessage> {
+  return projectToClientMessages(messages, buildToolLookup(tools))
+}
+
+/**
+ * Filter an array of UIMessages, applying clientInput/clientOutput
+ * transforms from tool definitions. The result is suitable for sending
+ * to the client for hydration -- tool-call arguments and tool-result
+ * content are filtered in place.
+ *
+ * @param messages - The full UIMessage array (e.g., from modelMessagesToUIMessages)
+ * @param tools - Tool definitions with optional clientInput/clientOutput transforms
+ * @returns A new array of UIMessages with filtered tool data
+ */
+export function toClientUIMessages(
+  messages: Array<UIMessage>,
+  tools: ReadonlyArray<Tool>,
+): Array<UIMessage> {
+  return projectToClientUIMessages(messages, buildToolLookup(tools))
 }

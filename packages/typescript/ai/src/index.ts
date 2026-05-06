@@ -3,6 +3,7 @@ export {
   chat,
   summarize,
   generateImage,
+  generateAudio,
   generateVideo,
   getVideoJobStatus,
   generateSpeech,
@@ -13,6 +14,7 @@ export {
 export { createChatOptions } from './activities/chat/index'
 export { createSummarizeOptions } from './activities/summarize/index'
 export { createImageOptions } from './activities/generateImage/index'
+export { createAudioOptions } from './activities/generateAudio/index'
 export { createVideoOptions } from './activities/generateVideo/index'
 export { createSpeechOptions } from './activities/generateSpeech/index'
 export { createTranscriptionOptions } from './activities/generateTranscription/index'
@@ -26,6 +28,8 @@ export type {
   AnyTextAdapter,
   AnySummarizeAdapter,
   SummarizeAdapter,
+  AnyAudioAdapter,
+  AudioAdapter,
   AnyTTSAdapter,
   TTSAdapter,
   AnyTranscriptionAdapter,
@@ -46,6 +50,8 @@ export {
   type InferToolName,
   type InferToolInput,
   type InferToolOutput,
+  type InferToolClientInput,
+  type InferToolClientOutput,
 } from './activities/chat/tools/tool-definition'
 
 // Schema conversion (Standard JSON Schema compliant)
@@ -62,6 +68,9 @@ export {
 
 // Tool call management
 export { ToolCallManager } from './activities/chat/tools/tool-calls'
+
+// Provider tool type
+export type { ProviderTool } from './tools/provider-tool'
 
 // Agent loop strategies
 export {
@@ -133,6 +142,8 @@ export {
   modelMessageToUIMessage,
   modelMessagesToUIMessages,
   normalizeToUIMessage,
+  toClientMessages,
+  toClientUIMessages,
 } from './activities/chat/messages'
 
 // Stream processing (unified for server and client)
@@ -164,3 +175,12 @@ export type {
 // Adapter extension utilities
 export { createModel, extendAdapter } from './extend-adapter'
 export type { ExtendedModelDef } from './extend-adapter'
+
+// Logger
+export type {
+  Logger,
+  DebugCategories,
+  DebugConfig,
+  DebugOption,
+} from './logger/types'
+export { ConsoleLogger } from './logger/console-logger'

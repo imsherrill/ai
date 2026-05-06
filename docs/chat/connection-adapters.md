@@ -2,6 +2,15 @@
 title: Connection Adapters
 id: connection-adapters
 order: 3
+description: "Connection adapters in TanStack AI bridge client and server for streaming chat responses — SSE, HTTP stream, direct async iterables, and custom transports."
+keywords:
+  - tanstack ai
+  - connection adapters
+  - sse
+  - server-sent events
+  - http stream
+  - streaming transport
+  - fetchServerSentEvents
 ---
 
 
@@ -60,6 +69,25 @@ const { messages } = useChat({
 });
 ```
 
+**Custom request body shaping:**
+
+Use `buildRequestBody` when the server should receive a focused event envelope instead of the default `{ messages, data }` payload.
+
+```typescript
+const { messages } = useChat({
+  connection: fetchServerSentEvents("/api/chat", {
+    buildRequestBody: ({ messages, data }) => ({
+      conversationId: data?.conversationId,
+      event: {
+        type: "user-message",
+        message: messages[messages.length - 1],
+      },
+    }),
+  }),
+  body: { conversationId: currentConversationId },
+});
+```
+
 ### HTTP Stream
 
 For environments that don't support SSE, use the HTTP stream adapter:
@@ -71,6 +99,8 @@ const { messages } = useChat({
   connection: fetchHttpStream("/api/chat"),
 });
 ```
+
+`fetchHttpStream` supports the same `buildRequestBody` option when you need the server to receive a custom event envelope instead of the default request body.
 
 ## Custom Adapters
 

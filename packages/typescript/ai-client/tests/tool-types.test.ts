@@ -40,6 +40,28 @@ const recommendTool = toolDefinition({
   }),
 })
 
+const executeTypescriptTool = toolDefinition({
+  name: 'execute_typescript',
+  description: 'Execute server-side TypeScript',
+  inputSchema: z.object({
+    typescriptCode: z.string(),
+    description: z.string(),
+  }),
+  outputSchema: z.object({
+    success: z.boolean(),
+    logs: z.array(z.string()),
+    internalResult: z.object({
+      total: z.number(),
+    }),
+  }),
+  clientInput: z.object({
+    description: z.string(),
+  }),
+  clientOutput: z.object({
+    success: z.boolean(),
+  }),
+})
+
 // Create tool instances for typing
 const guitarToolClient = guitarTool.client((args) => ({
   id: args.id,
@@ -54,6 +76,12 @@ const cartToolClient = cartTool.client(() => ({
 
 const recommendToolClient = recommendTool.client(() => ({
   preference: 'rock',
+}))
+
+const executeTypescriptToolClient = executeTypescriptTool.client(() => ({
+  success: true,
+  logs: ['internal'],
+  internalResult: { total: 42 },
 }))
 
 describe('Tool Type Narrowing', () => {
@@ -227,6 +255,52 @@ describe('Tool Type Narrowing', () => {
           // After this narrowing, part.output should be { preference: string }
           expectTypeOf(part.output).toMatchTypeOf<{ preference: string }>()
           expectTypeOf(part.output).toHaveProperty('preference')
+        }
+      }
+    }
+  })
+
+  it('should propagate projected client input and output types', () => {
+    type ProjectedToolCallPart = ToolCallPart<
+      readonly [typeof executeTypescriptToolClient]
+    >
+
+    type ExecuteCallPart = Extract<
+      ProjectedToolCallPart,
+      { name: 'execute_typescript' }
+    >
+
+    expectTypeOf<ExecuteCallPart['input']>().toMatchTypeOf<
+      | { description: string }
+      | undefined
+    >()
+    expectTypeOf<ExecuteCallPart['output']>().toMatchTypeOf<
+      | { success: boolean }
+      | undefined
+    >()
+  })
+
+  it('should surface projected types through InferChatMessages', () => {
+    const options = createChatClientOptions({
+      connection: {
+        connect: async function* () {},
+      },
+      tools: [executeTypescriptToolClient] as const,
+    })
+
+    type Messages = InferChatMessages<typeof options>
+    const messages = [] as Messages
+    const message = messages[0]
+
+    if (message?.role === 'assistant') {
+      for (const part of message.parts) {
+        if (part.type === 'tool-call' && part.name === 'execute_typescript') {
+          expectTypeOf(part.input).toMatchTypeOf<
+            { description: string } | undefined
+          >()
+          expectTypeOf(part.output).toMatchTypeOf<
+            { success: boolean } | undefined
+          >()
         }
       }
     }

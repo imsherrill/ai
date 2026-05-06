@@ -81,4 +81,16 @@ export const featureConfigs: Record<Feature, FeatureConfig> = {
     tools: [],
     modelOptions: {},
   },
+  'video-gen': {
+    tools: [],
+    modelOptions: {},
+  },
+  'audio-gen': {
+    tools: [],
+    modelOptions: {},
+  },
+  'sound-effects': {
+    tools: [],
+    modelOptions: {},
+  },
 }

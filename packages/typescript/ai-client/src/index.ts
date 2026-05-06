@@ -31,6 +31,7 @@ export type {
   VideoStatusInfo,
   VideoGenerateResult,
   ImageGenerateInput,
+  AudioGenerateInput,
   SpeechGenerateInput,
   TranscriptionGenerateInput,
   SummarizeGenerateInput,
@@ -42,6 +43,8 @@ export type {
   ExtractToolNames,
   ExtractToolInput,
   ExtractToolOutput,
+  ExtractToolClientInput,
+  ExtractToolClientOutput,
 } from './tool-types'
 export type { AnyClientTool } from '@tanstack/ai'
 export type {
