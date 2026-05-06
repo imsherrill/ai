@@ -1,6 +1,13 @@
 import type { Provider, Feature } from '@/lib/types'
 
-const matrix: Record<Feature, Set<Provider>> = {
+/**
+ * Single source of truth for provider × feature support.
+ *
+ * This matrix is imported by `tests/test-matrix.ts` (Playwright specs) and
+ * by the dev routes under `src/routes/` to decide which provider/feature
+ * combinations to render and test. Update this file only — do not fork.
+ */
+export const matrix: Record<Feature, Set<Provider>> = {
   chat: new Set([
     'openai',
     'anthropic',
@@ -20,6 +27,7 @@ const matrix: Record<Feature, Set<Provider>> = {
     'openrouter',
   ]),
   reasoning: new Set(['openai', 'anthropic', 'gemini']),
+  'multi-turn-reasoning': new Set(['anthropic']),
   'multi-turn': new Set([
     'openai',
     'anthropic',
@@ -112,34 +120,20 @@ const matrix: Record<Feature, Set<Provider>> = {
     'grok',
     'openrouter',
   ]),
-  // Routed through chat — all providers with chat support work
-  'image-gen': new Set([
-    'openai',
-    'anthropic',
-    'gemini',
-    'ollama',
-    'groq',
-    'grok',
-    'openrouter',
-  ]),
-  tts: new Set([
-    'openai',
-    'anthropic',
-    'gemini',
-    'ollama',
-    'groq',
-    'grok',
-    'openrouter',
-  ]),
-  transcription: new Set([
-    'openai',
-    'anthropic',
-    'gemini',
-    'ollama',
-    'groq',
-    'grok',
-    'openrouter',
-  ]),
+  // Gemini excluded: aimock doesn't mock Gemini's Imagen predict endpoint format
+  'image-gen': new Set(['openai', 'grok']),
+  // ElevenLabs TTS (/v1/text-to-speech/{voice_id}) and STT (/v1/speech-to-text)
+  // are mocked via local mounts in global-setup.ts (aimock 1.17 covers
+  // /v1/sound-generation + /v1/music/* but not these two routes yet).
+  tts: new Set(['openai', 'grok', 'elevenlabs']),
+  transcription: new Set(['openai', 'grok', 'elevenlabs']),
+  'video-gen': new Set(['openai']),
+  // Music generation: Gemini Lyria (generateContent with AUDIO modality)
+  // and ElevenLabs music_v1 (/v1/music/*) — both natively mocked by aimock
+  // 1.17+.
+  'audio-gen': new Set(['gemini', 'elevenlabs']),
+  // ElevenLabs sound-generation (/v1/sound-generation), aimock 1.17+.
+  'sound-effects': new Set(['elevenlabs']),
 }
 
 export function isSupported(provider: Provider, feature: Feature): boolean {
